@@ -1,0 +1,127 @@
+require('dotenv').config();
+const mongoose = require('mongoose');
+const User = require('./src/models/User');
+const Status = require('./src/models/Status');
+const logger = require('./src/config/logger');
+
+const seedDatabase = async () => {
+  try {
+    // Connexion sans les options dépréciées
+    await mongoose.connect(process.env.MONGODB_URI);
+    logger.info('✅ Connecté à MongoDB');
+
+    // Créer les statuts par défaut
+    const defaultStatuses = [
+      { label: 'En attente', parDefault: true, order: 0, color: '#ffc107', isTerminal: false },
+      { label: 'Diagnostic', parDefault: false, order: 1, color: '#17a2b8', isTerminal: false },
+      { label: 'Devis', parDefault: false, order: 2, color: '#6f42c1', isTerminal: false },
+      { label: 'Attente validation', parDefault: false, order: 3, color: '#fd7e14', isTerminal: false },
+      { label: 'En réparation', parDefault: false, order: 4, color: '#0d6efd', isTerminal: false },
+      { label: 'Réparé', parDefault: false, order: 5, color: '#198754', isTerminal: false },
+      { label: 'Non réparable', parDefault: false, order: 6, color: '#dc3545', isTerminal: true },
+      { label: 'Prêt', parDefault: false, order: 7, color: '#20c997', isTerminal: false },
+      { label: 'Livré', parDefault: false, order: 8, color: '#28a745', isTerminal: true },
+      { label: 'Annulé', parDefault: false, order: 9, color: '#6c757d', isTerminal: true }
+    ];
+
+    for (const statusData of defaultStatuses) {
+      await Status.findOneAndUpdate(
+        { label: statusData.label },
+        statusData,
+        { upsert: true, returnDocument: 'after' }
+      );
+    }
+    logger.info('✅ Statuts par défaut créés');
+
+    // Créer l'utilisateur admin par défaut
+    const adminData = {
+      username: process.env.ADMIN_USERNAME || 'admin',
+      email: process.env.ADMIN_EMAIL || 'admin@atelier.com',
+      password: process.env.ADMIN_PASSWORD || 'admin123',
+      firstName: process.env.ADMIN_FIRST_NAME || 'Admin',
+      lastName: process.env.ADMIN_LAST_NAME || 'System',
+      role: 'ADMIN',
+      isActive: true
+    };
+
+    const existingAdmin = await User.findOne({ 
+      $or: [{ username: adminData.username }, { email: adminData.email }] 
+    });
+
+    if (!existingAdmin) {
+      const admin = new User(adminData);
+      await admin.save();
+      logger.info(`✅ Admin créé: ${adminData.username}`);
+    } else {
+      logger.info('✅ Admin déjà existant');
+    }
+
+    // Créer un utilisateur commercial par défaut
+    const commercialData = {
+      username: 'commercial',
+      email: 'commercial@atelier.com',
+      password: 'commercial123',
+      firstName: 'Commercial',
+      lastName: 'Test',
+      role: 'COMMERCIAL',
+      isActive: true
+    };
+
+    const existingCommercial = await User.findOne({ 
+      $or: [{ username: commercialData.username }, { email: commercialData.email }] 
+    });
+
+    if (!existingCommercial) {
+      const commercial = new User(commercialData);
+      await commercial.save();
+      logger.info('✅ Commercial créé');
+    } else {
+      logger.info('✅ Commercial déjà existant');
+    }
+
+    // Créer un utilisateur réparateur par défaut
+    const reparateurData = {
+      username: 'reparateur',
+      email: 'reparateur@atelier.com',
+      password: 'reparateur123',
+      firstName: 'Reparateur',
+      lastName: 'Test',
+      role: 'REPARATEUR',
+      isActive: true
+    };
+
+    const existingReparateur = await User.findOne({ 
+      $or: [{ username: reparateurData.username }, { email: reparateurData.email }] 
+    });
+
+    if (!existingReparateur) {
+      const reparateur = new User(reparateurData);
+      await reparateur.save();
+      logger.info('✅ Réparateur créé');
+    } else {
+      logger.info('✅ Réparateur déjà existant');
+    }
+
+    // Vérifier que tout a bien été créé
+    const userCount = await User.countDocuments();
+    const statusCount = await Status.countDocuments();
+    
+    logger.info('📊 Résumé de l\'initialisation:');
+    logger.info(`   👤 Utilisateurs: ${userCount}`);
+    logger.info(`   🏷️ Statuts: ${statusCount}`);
+    
+    logger.info('🎉 Base de données initialisée avec succès!');
+    process.exit(0);
+  } catch (error) {
+    logger.error('❌ Erreur lors du seed:', error);
+    process.exit(1);
+  }
+};
+
+// Gestion des erreurs non capturées
+process.on('unhandledRejection', (error) => {
+  logger.error('❌ Rejet non géré:', error);
+  process.exit(1);
+});
+
+seedDatabase();
