@@ -56,6 +56,8 @@ exports.getAll = async (req, res) => {
         .populate('createdBy', 'username firstName lastName')
         .populate('representant', 'username firstName lastName')
         .populate('reparateur', 'username firstName lastName')
+        .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
+        .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
         .sort(sort)
         .skip(skip)
         .limit(parseInt(limit)),
@@ -64,7 +66,11 @@ exports.getAll = async (req, res) => {
 
     const reparationsWithReste = reparations.map(r => ({
       ...r.toObject(),
-      reste: r.prix - r.acompte
+      reste: r.prix - r.acompte,
+      prixTotal: r.prixTotal,
+      resteTotal: r.resteTotal,
+      imprevusEnAttente: (r.diagnosticImprevus?.imprevus || [])
+        .filter(i => i.accepte === null || i.accepte === undefined).length,
     }));
 
     res.json({
@@ -99,8 +105,8 @@ exports.getOne = async (req, res) => {
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate('modifications.oldValue')
-      .populate('modifications.newValue');
+      .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
+      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName');
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({
@@ -114,6 +120,8 @@ exports.getOne = async (req, res) => {
       data: {
         ...reparation.toObject(),
         reste: reparation.prix - reparation.acompte,
+        prixTotal: reparation.prixTotal,
+        resteTotal: reparation.resteTotal,
       }
     });
   } catch (error) {
@@ -130,52 +138,24 @@ exports.getOne = async (req, res) => {
 // ============================================================
 exports.create = async (req, res) => {
   try {
-      const {
-      client,
-      categorie,
-      objet,
-      marque,
-      modele,
-      numeroSerie,
-      accessoires,
-      problemeDeclare,
-      panneType,
-      note,
-      observation,
-      observations,
-      diagnostic,
-      travauxEffectues,
-      piecesUtilisees,
-      prix,
-      acompte,
-      paymentType,
-      status,
-      representant,
-      reparateur,
-      datePrevisionnelle,
-      isReparable,
-      isNotified
+    const {
+      client, categorie, objet, marque, modele, numeroSerie, accessoires,
+      problemeDeclare, panneType, note, observation, observations,
+      diagnostic, diagnosticImprevus: diagnosticImprevusData,
+      travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
+      representant, reparateur, datePrevisionnelle, isReparable, isNotified
     } = req.body;
 
-    // Vérifier le client
     const clientExists = await Client.findById(client);
     if (!clientExists) {
-      return res.status(400).json({
-        success: false,
-        message: 'Client non trouvé'
-      });
+      return res.status(400).json({ success: false, message: 'Client non trouvé' });
     }
 
-    // Vérifier le statut
     const statusExists = await Status.findById(status);
     if (!statusExists) {
-      return res.status(400).json({
-        success: false,
-        message: 'Statut non trouvé'
-      });
+      return res.status(400).json({ success: false, message: 'Statut non trouvé' });
     }
 
-    // ✅ VÉRIFIER LE TYPE DE PANNE (OBLIGATOIRE)
     if (!panneType || !panneType.trim()) {
       return res.status(400).json({
         success: false,
@@ -183,40 +163,32 @@ exports.create = async (req, res) => {
       });
     }
 
-    // ✅ Calcul auto du paymentType
     const finalPrix = prix || 0;
     const finalAcompte = acompte || 0;
     let finalPaymentType = paymentType || 'unpaid';
-    
+
     if (finalAcompte >= finalPrix && finalPrix > 0) finalPaymentType = 'paid';
     else if (finalAcompte > 0 && finalAcompte < finalPrix) finalPaymentType = 'partial';
     else finalPaymentType = 'unpaid';
 
-    // ✅ Nettoyer les observations vides
     const cleanObservations = (observations || []).filter(o => o.text && o.text.trim() !== '');
 
-    // ✅ Nettoyer les imprévus
-    const cleanUnexpectedIssues = (unexpectedIssues || []).filter(
-      i => i.description && i.description.trim() !== ''
-    );
-
-    // ✅ Créer la réparation
     const reparation = new Reparation({
-      client,
-      categorie,
-      objet,
-      marque,
-      modele,
-      numeroSerie,
-      accessoires,
-      problemeDeclare,
-      panneType,
-      note,
-      observation,
+      client, categorie, objet, marque, modele, numeroSerie, accessoires,
+      problemeDeclare, panneType, note, observation,
       observations: cleanObservations,
       diagnostic,
-      travauxEffectues,
-      piecesUtilisees,
+      diagnosticImprevus: {
+        constat: diagnosticImprevusData?.constat || '',
+        imprevus: (diagnosticImprevusData?.imprevus || []).filter(i => i.description?.trim()),
+        decisionClient: {
+          statut: diagnosticImprevusData?.decisionClient?.statut || 'en_attente',
+          date: diagnosticImprevusData?.decisionClient?.date || null,
+          note: diagnosticImprevusData?.decisionClient?.note || '',
+          enregistrePar: diagnosticImprevusData?.decisionClient?.enregistrePar || null,
+        }
+      },
+      travauxEffectues, piecesUtilisees,
       prix: finalPrix,
       acompte: finalAcompte,
       paymentType: finalPaymentType,
@@ -227,7 +199,6 @@ exports.create = async (req, res) => {
       datePrevisionnelle: datePrevisionnelle || null,
       isReparable: isReparable !== undefined ? isReparable : true,
       isNotified: isNotified !== undefined ? isNotified : false,
-      // ✅ Historique initial
       modifications: [{
         field: '_create',
         oldValue: null,
@@ -239,7 +210,6 @@ exports.create = async (req, res) => {
 
     await reparation.save();
 
-    // Récupérer avec populations
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone email code')
       .populate('status', 'label color')
@@ -248,7 +218,9 @@ exports.create = async (req, res) => {
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
-      .populate('modifications.modifiedBy', 'username firstName lastName');
+      .populate('modifications.modifiedBy', 'username firstName lastName')
+      .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
+      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName');
 
     logger.info(`Réparation créée: ${reparation.numero} par ${req.user.username}`);
 
@@ -257,7 +229,9 @@ exports.create = async (req, res) => {
       message: 'Réparation créée avec succès',
       data: {
         ...populated.toObject(),
-        reste: populated.prix - populated.acompte
+        reste: populated.prix - populated.acompte,
+        prixTotal: populated.prixTotal,
+        resteTotal: populated.resteTotal,
       }
     });
   } catch (error) {
@@ -277,39 +251,17 @@ exports.update = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id);
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
-        const {
-      categorie,
-      objet,
-      marque,
-      modele,
-      numeroSerie,
-      accessoires,
-      problemeDeclare,
-      panneType,
-      note,
-      observation,
-      observations,
-      diagnostic,
-      travauxEffectues,
-      piecesUtilisees,
-      prix,
-      acompte,
-      paymentType,
-      status,
-      representant,
-      reparateur,
-      datePrevisionnelle,
-      isReparable,
-      isNotified
+    const {
+      categorie, objet, marque, modele, numeroSerie, accessoires,
+      problemeDeclare, panneType, note, observation, observations,
+      diagnostic, diagnosticImprevus: diagnosticImprevusData,
+      travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
+      representant, reparateur, datePrevisionnelle, isReparable, isNotified
     } = req.body;
 
-    // ✅ VÉRIFIER LE TYPE DE PANNE (si modifié)
     if (panneType !== undefined && (!panneType || !panneType.trim())) {
       return res.status(400).json({
         success: false,
@@ -317,18 +269,13 @@ exports.update = async (req, res) => {
       });
     }
 
-    // ✅ Vérifier le statut si modifié
     if (status && status !== reparation.status.toString()) {
       const statusExists = await Status.findById(status);
       if (!statusExists) {
-        return res.status(400).json({
-          success: false,
-          message: 'Statut non trouvé'
-        });
+        return res.status(400).json({ success: false, message: 'Statut non trouvé' });
       }
     }
 
-    // ✅ SNAPSHOT AVANT MODIFICATION
     const oldValues = {
       categorie: reparation.categorie,
       objet: reparation.objet,
@@ -342,7 +289,7 @@ exports.update = async (req, res) => {
       observation: reparation.observation,
       observations: reparation.observations,
       diagnostic: reparation.diagnostic,
-      travauxEffectues: reparation.travauxEffectues,
+diagnosticImprevus: JSON.parse(JSON.stringify(reparation.diagnosticImprevus || {})),      travauxEffectues: reparation.travauxEffectues,
       piecesUtilisees: reparation.piecesUtilisees,
       prix: reparation.prix,
       acompte: reparation.acompte,
@@ -351,10 +298,8 @@ exports.update = async (req, res) => {
       datePrevisionnelle: reparation.datePrevisionnelle,
       isReparable: reparation.isReparable,
       isNotified: reparation.isNotified,
-      
     };
 
-    // ✅ Mettre à jour les champs
     reparation.categorie = categorie || reparation.categorie;
     reparation.objet = objet || reparation.objet;
     reparation.marque = marque || reparation.marque;
@@ -365,11 +310,11 @@ exports.update = async (req, res) => {
     reparation.panneType = panneType !== undefined ? panneType : reparation.panneType;
     reparation.note = note !== undefined ? note : reparation.note;
     reparation.observation = observation !== undefined ? observation : reparation.observation;
-    
+
     if (observations !== undefined) {
       reparation.observations = observations.filter(o => o.text && o.text.trim() !== '');
     }
-    
+
     reparation.diagnostic = diagnostic !== undefined ? diagnostic : reparation.diagnostic;
     reparation.travauxEffectues = travauxEffectues !== undefined ? travauxEffectues : reparation.travauxEffectues;
     reparation.piecesUtilisees = piecesUtilisees !== undefined ? piecesUtilisees : reparation.piecesUtilisees;
@@ -382,6 +327,49 @@ exports.update = async (req, res) => {
     reparation.isReparable = isReparable !== undefined ? isReparable : reparation.isReparable;
     reparation.isNotified = isNotified !== undefined ? isNotified : reparation.isNotified;
 
+    // ✅ Mise à jour du diagnosticImprevus
+    if (diagnosticImprevusData !== undefined) {
+      const oldDiag = reparation.diagnosticImprevus || {};
+      const newImprevus = (diagnosticImprevusData.imprevus || []).filter(i => i.description?.trim());
+
+      const enrichedImprevus = newImprevus.map((newImp, idx) => {
+        const oldImp = oldDiag.imprevus?.[idx];
+        const decisionChanged = oldImp && oldImp.accepte !== newImp.accepte;
+        const isNewDecision = newImp.accepte !== null && newImp.accepte !== undefined;
+
+        return {
+          description: newImp.description,
+          prixSupplementaire: newImp.prixSupplementaire || 0,
+          accepte: newImp.accepte !== undefined ? newImp.accepte : null,
+          dateDecision: (decisionChanged || (isNewDecision && !oldImp?.dateDecision))
+            ? new Date()
+            : (newImp.dateDecision || oldImp?.dateDecision || null),
+          decisionPar: (decisionChanged || (isNewDecision && !oldImp?.decisionPar))
+            ? req.user.id
+            : (newImp.decisionPar || oldImp?.decisionPar || null),
+          noteDecision: newImp.noteDecision || '',
+        };
+      });
+
+      const newDecision = diagnosticImprevusData.decisionClient || {};
+      const oldDecision = oldDiag.decisionClient || {};
+      const decisionChanged = oldDecision.statut !== newDecision.statut;
+
+      reparation.diagnosticImprevus = {
+        constat: diagnosticImprevusData.constat !== undefined ? diagnosticImprevusData.constat : (oldDiag.constat || ''),
+        imprevus: enrichedImprevus,
+        decisionClient: {
+          statut: newDecision.statut || oldDecision.statut || 'en_attente',
+          date: decisionChanged && newDecision.statut !== 'en_attente'
+            ? new Date()
+            : (newDecision.date || oldDecision.date || null),
+          note: newDecision.note !== undefined ? newDecision.note : (oldDecision.note || ''),
+          enregistrePar: decisionChanged && newDecision.statut !== 'en_attente'
+            ? req.user.id
+            : (newDecision.enregistrePar || oldDecision.enregistrePar || null),
+        }
+      };
+    }
 
     // ✅ Recalculer le paymentType
     const finalPrix = reparation.prix || 0;
@@ -399,14 +387,14 @@ exports.update = async (req, res) => {
     }
 
     // ============================================================
-    // ✅ TRAÇABILITÉ : Enregistrer les modifications
+    // ✅ TRAÇABILITÉ
     // ============================================================
     const trackedFields = [
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
       'numeroSerie', 'accessoires', 'datePrevisionnelle',
       'categorie', 'objet', 'observation',
-      'diagnostic', 'travauxEffectues', 'piecesUtilisees',
+      'diagnostic', 'diagnosticImprevus', 'travauxEffectues', 'piecesUtilisees',
       'isReparable', 'isNotified',
     ];
 
@@ -421,12 +409,34 @@ exports.update = async (req, res) => {
       let changed = false;
 
       if (field === 'observations') {
-        const oldStr = JSON.stringify(
-          (oldVal || []).map(o => ({ text: o.text || '' }))
-        );
-        const newStr = JSON.stringify(
-          (newVal || []).map(o => ({ text: o.text || '' }))
-        );
+        const oldStr = JSON.stringify((oldVal || []).map(o => ({ text: o.text || '' })));
+        const newStr = JSON.stringify((newVal || []).map(o => ({ text: o.text || '' })));
+        changed = oldStr !== newStr;
+      } else if (field === 'diagnosticImprevus') {
+        const oldStr = JSON.stringify({
+          constat: oldVal?.constat || '',
+          imprevus: (oldVal?.imprevus || []).map(i => ({
+            description: i.description || '',
+            prixSupplementaire: i.prixSupplementaire || 0,
+            accepte: i.accepte,
+          })),
+          decisionClient: {
+            statut: oldVal?.decisionClient?.statut || 'en_attente',
+            note: oldVal?.decisionClient?.note || '',
+          }
+        });
+        const newStr = JSON.stringify({
+          constat: newVal?.constat || '',
+          imprevus: (newVal?.imprevus || []).map(i => ({
+            description: i.description || '',
+            prixSupplementaire: i.prixSupplementaire || 0,
+            accepte: i.accepte,
+          })),
+          decisionClient: {
+            statut: newVal?.decisionClient?.statut || 'en_attente',
+            note: newVal?.decisionClient?.note || '',
+          }
+        });
         changed = oldStr !== newStr;
       } else if (typeof oldVal === 'boolean' || typeof newVal === 'boolean') {
         changed = Boolean(oldVal) !== Boolean(newVal);
@@ -447,32 +457,6 @@ exports.update = async (req, res) => {
       }
     });
 
-    // ✅ Imprévus (comparer les tableaux)
-    if (unexpectedIssues !== undefined) {
-      const oldIssuesStr = JSON.stringify(
-        (oldValues.unexpectedIssues || []).map(i => ({
-          description: i.description || '',
-          additionalPrice: i.additionalPrice || 0,
-        }))
-      );
-      const newIssuesStr = JSON.stringify(
-        (reparation.unexpectedIssues || []).map(i => ({
-          description: i.description || '',
-          additionalPrice: i.additionalPrice || 0,
-        }))
-      );
-
-      if (oldIssuesStr !== newIssuesStr) {
-        newModifications.push({
-          field: 'unexpectedIssues',
-          oldValue: oldValues.unexpectedIssues,
-          newValue: reparation.unexpectedIssues,
-          modifiedBy: req.user.id,
-          modifiedAt: new Date(),
-        });
-      }
-    }
-
     if (newModifications.length > 0) {
       reparation.modifications = [
         ...(reparation.modifications || []),
@@ -491,7 +475,9 @@ exports.update = async (req, res) => {
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
-      .populate('modifications.modifiedBy', 'username firstName lastName');
+      .populate('modifications.modifiedBy', 'username firstName lastName')
+      .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
+      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName');
 
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
 
@@ -500,7 +486,9 @@ exports.update = async (req, res) => {
       message: 'Réparation modifiée avec succès',
       data: {
         ...populated.toObject(),
-        reste: populated.prix - populated.acompte
+        reste: populated.prix - populated.acompte,
+        prixTotal: populated.prixTotal,
+        resteTotal: populated.resteTotal,
       }
     });
   } catch (error) {
@@ -521,18 +509,12 @@ exports.changeStatus = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id);
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     const statusExists = await Status.findById(status);
     if (!statusExists) {
-      return res.status(400).json({
-        success: false,
-        message: 'Statut non trouvé'
-      });
+      return res.status(400).json({ success: false, message: 'Statut non trouvé' });
     }
 
     const oldStatus = reparation.status;
@@ -548,7 +530,6 @@ exports.changeStatus = async (req, res) => {
 
     reparation.status = status;
 
-    // ✅ Enregistrer dans modifications
     reparation.modifications = [
       ...(reparation.modifications || []),
       {
@@ -591,16 +572,12 @@ exports.assignReparateur = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id);
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     const oldReparateur = reparation.reparateur;
     reparation.reparateur = reparateur;
 
-    // ✅ Enregistrer dans modifications
     reparation.modifications = [
       ...(reparation.modifications || []),
       {
@@ -633,7 +610,6 @@ exports.assignReparateur = async (req, res) => {
   }
 };
 
-
 // ============================================================
 // DELETE - Supprimer une réparation (soft delete)
 // ============================================================
@@ -642,15 +618,11 @@ exports.delete = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id);
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     reparation.isDeleted = true;
 
-    // ✅ Enregistrer dans modifications
     reparation.modifications = [
       ...(reparation.modifications || []),
       {
@@ -694,10 +666,7 @@ exports.generatePDF = async (req, res) => {
       .populate('reparateur', 'username firstName lastName');
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     const options = {
@@ -715,10 +684,7 @@ exports.generatePDF = async (req, res) => {
     res.send(pdfBuffer);
   } catch (error) {
     logger.error('Erreur generatePDF:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la génération du PDF'
-    });
+    res.status(500).json({ success: false, message: 'Erreur lors de la génération du PDF' });
   }
 };
 
@@ -737,10 +703,7 @@ exports.getTicketHTML = async (req, res) => {
       .populate('reparateur', 'username firstName lastName');
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée'
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     const options = {
@@ -757,9 +720,6 @@ exports.getTicketHTML = async (req, res) => {
     res.send(html);
   } catch (error) {
     logger.error('Erreur getTicketHTML:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la génération du ticket'
-    });
+    res.status(500).json({ success: false, message: 'Erreur lors de la génération du ticket' });
   }
 };

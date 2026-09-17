@@ -40,13 +40,11 @@ const reparationSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-    // ✅ Type de panne (obligatoire, choisi dans la liste)
   panneType: {
     type: String,
     required: [true, 'Le type de panne est obligatoire'],
     trim: true
   },
-  // ✅ Description du problème (optionnel, texte libre)
   problemeDeclare: {
     type: String,
     trim: true,
@@ -131,12 +129,72 @@ const reparationSchema = new mongoose.Schema({
     default: false
   },
 
-  
+  // ============================================================
+  // ✅ NOUVEAU : GESTION DES DIAGNOSTICS ET IMPRÉVUS
+  // ============================================================
+  diagnosticImprevus: {
+    constat: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+    imprevus: [{
+      description: {
+        type: String,
+        trim: true,
+        required: true
+      },
+      prixSupplementaire: {
+        type: Number,
+        default: 0,
+        min: [0, 'Le prix supplémentaire ne peut pas être négatif']
+      },
+      accepte: {
+        type: Boolean,
+        default: null
+      },
+      dateDecision: {
+        type: Date,
+        default: null
+      },
+      decisionPar: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      noteDecision: {
+        type: String,
+        trim: true,
+        default: ''
+      }
+    }],
+    decisionClient: {
+      statut: {
+        type: String,
+        enum: ['en_attente', 'accepte', 'refuse', 'annule'],
+        default: 'en_attente'
+      },
+      date: {
+        type: Date,
+        default: null
+      },
+      note: {
+        type: String,
+        trim: true,
+        default: ''
+      },
+      enregistrePar: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      }
+    }
+  },
+
   isDeleted: {
     type: Boolean,
     default: false
   },
-  // ✅ Traçabilité des modifications
   modifications: [{
     field: { type: String, required: true },
     oldValue: { type: mongoose.Schema.Types.Mixed },
@@ -153,6 +211,19 @@ const reparationSchema = new mongoose.Schema({
 // Virtual pour le reste à payer
 reparationSchema.virtual('reste').get(function() {
   return Math.max(0, this.prix - this.acompte);
+});
+
+// ✅ Virtual pour le prix total (initial + imprévus acceptés)
+reparationSchema.virtual('prixTotal').get(function() {
+  const imprevusAcceptes = (this.diagnosticImprevus?.imprevus || [])
+    .filter(i => i.accepte === true)
+    .reduce((sum, i) => sum + (i.prixSupplementaire || 0), 0);
+  return (this.prix || 0) + imprevusAcceptes;
+});
+
+// ✅ Virtual pour le reste total
+reparationSchema.virtual('resteTotal').get(function() {
+  return Math.max(0, this.prixTotal - (this.acompte || 0));
 });
 
 // Middleware pour générer le numéro de réparation
