@@ -13,6 +13,8 @@ router.patch('/:id/status', requireAuth, requirePermission('reparations'), repar
 router.patch('/:id/assign', requireAuth, requirePermission('reparations'), reparationController.assignReparateur);
 router.delete('/:id', requireAuth, requirePermission('reparations'), reparationController.delete);
 
+// ✅ Route PUBLIQUE (sans auth) pour le suivi client via QR Code
+router.get('/public/:numero', reparationController.getPublicByNumero);
 
 // Impression
 router.get('/:id/pdf', requireAuth, requirePermission('reparations'), reparationController.generatePDF);

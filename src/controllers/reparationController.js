@@ -134,6 +134,102 @@ exports.getOne = async (req, res) => {
 };
 
 // ============================================================
+// GET - Route PUBLIQUE : Consulter une réparation par numéro (QR Code)
+// ✅ NOUVEAU : accessible sans authentification
+// ============================================================
+exports.getPublicByNumero = async (req, res) => {
+  try {
+    const { numero } = req.params;
+
+    if (!numero) {
+      return res.status(400).json({
+        success: false,
+        message: 'Numéro de réparation requis'
+      });
+    }
+
+    const reparation = await Reparation.findOne({
+      numero,
+      isDeleted: false
+    })
+      .populate('client', 'nom')
+      .populate('status', 'label color')
+      .populate('categorie', 'nom')
+      .populate('objet', 'nom')
+      .populate('reparateur', 'firstName lastName');
+
+    if (!reparation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Réparation non trouvée'
+      });
+    }
+
+    // ✅ Retourner UNIQUEMENT les infos publiques (pas de données sensibles)
+    const imprevusAcceptes = (reparation.diagnosticImprevus?.imprevus || [])
+      .filter(i => i.accepte === true);
+
+    const imprevusEnAttente = (reparation.diagnosticImprevus?.imprevus || [])
+      .filter(i => i.accepte === null || i.accepte === undefined);
+
+    const totalImprevusAcceptes = imprevusAcceptes
+      .reduce((sum, i) => sum + (Number(i.prixSupplementaire) || 0), 0);
+
+    const prixTotal = (reparation.prix || 0) + totalImprevusAcceptes;
+    const reste = Math.max(0, prixTotal - (reparation.acompte || 0));
+
+    res.json({
+      success: true,
+      data: {
+        numero: reparation.numero,
+        client: {
+          nom: reparation.client?.nom || 'N/A',
+        },
+        objet: reparation.objet?.nom,
+        categorie: reparation.categorie?.nom,
+        marque: reparation.marque,
+        modele: reparation.modele,
+        numeroSerie: reparation.numeroSerie,
+        panneType: reparation.panneType,
+        problemeDeclare: reparation.problemeDeclare,
+        status: {
+          label: reparation.status?.label,
+          color: reparation.status?.color,
+        },
+        reparateur: reparation.reparateur
+          ? {
+              firstName: reparation.reparateur.firstName,
+              lastName: reparation.reparateur.lastName,
+            }
+          : null,
+        dateReception: reparation.dateReception || reparation.createdAt,
+        datePrevisionnelle: reparation.datePrevisionnelle,
+        dateFinReelle: reparation.dateFinReelle,
+        dateLivraison: reparation.dateLivraison,
+        prix: reparation.prix,
+        acompte: reparation.acompte,
+        prixTotal,
+        reste,
+        imprevusAcceptes: imprevusAcceptes.map(i => ({
+          description: i.description,
+          prix: i.prixSupplementaire,
+        })),
+        imprevusEnAttente: imprevusEnAttente.length,
+        isReparable: reparation.isReparable,
+        createdAt: reparation.createdAt,
+        updatedAt: reparation.updatedAt,
+      }
+    });
+  } catch (error) {
+    logger.error('Erreur getPublicByNumero:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération'
+    });
+  }
+};
+
+// ============================================================
 // POST - Créer une réparation
 // ============================================================
 exports.create = async (req, res) => {
@@ -289,7 +385,8 @@ exports.update = async (req, res) => {
       observation: reparation.observation,
       observations: reparation.observations,
       diagnostic: reparation.diagnostic,
-diagnosticImprevus: JSON.parse(JSON.stringify(reparation.diagnosticImprevus || {})),      travauxEffectues: reparation.travauxEffectues,
+      diagnosticImprevus: JSON.parse(JSON.stringify(reparation.diagnosticImprevus || {})),
+      travauxEffectues: reparation.travauxEffectues,
       piecesUtilisees: reparation.piecesUtilisees,
       prix: reparation.prix,
       acompte: reparation.acompte,
