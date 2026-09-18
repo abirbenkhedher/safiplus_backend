@@ -17,6 +17,7 @@ const reparationRoutes = require('./src/routes/reparationRoutes');
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
 const exportRoutes = require('./src/routes/exportRoutes');
 const historyRoutes = require('./src/routes/historyRoutes');
+const teamMessagesRouter = require('./src/routes/teamMessages');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -50,6 +51,7 @@ app.use('/api/reparations', reparationRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/history', historyRoutes);
+app.use('/api/team-messages', teamMessagesRouter);
 
 
 // Error handler
