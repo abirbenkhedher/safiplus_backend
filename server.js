@@ -27,7 +27,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://localhost:5173',
-    process.env.FRONTEND_URL
+    'https://safiplus-frontend.vercel.app/'
   ].filter(Boolean),
   credentials: true
 }));
