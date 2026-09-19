@@ -344,7 +344,7 @@ exports.update = async (req, res) => {
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
       representant, reparateur, datePrevisionnelle, isReparable, isNotified,
-      envoyerSMS = true  // ✅ NOUVEAU
+      envoyerSMS = false  // ✅ NOUVEAU
     } = req.body;
 
     if (panneType !== undefined && (!panneType || !panneType.trim())) {
@@ -615,7 +615,7 @@ exports.update = async (req, res) => {
 // ============================================================
 exports.changeStatus = async (req, res) => {
   try {
-    const { status, comment, envoyerSMS = true } = req.body;
+    const { status, comment, envoyerSMS = false } = req.body;
 
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone email code');
