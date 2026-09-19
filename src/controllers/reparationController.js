@@ -3,6 +3,7 @@ const Client = require('../models/Client');
 const Status = require('../models/Status');
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
+const smsService = require('../services/smsService');   // ✅ NOUVEAU : Service SMS TextBee
 
 // ============================================================
 // GET - Liste des réparations avec filtres
@@ -135,7 +136,7 @@ exports.getOne = async (req, res) => {
 
 // ============================================================
 // GET - Route PUBLIQUE : Consulter une réparation par numéro (QR Code)
-// ✅ NOUVEAU : accessible sans authentification
+// ✅ Accessible sans authentification
 // ============================================================
 exports.getPublicByNumero = async (req, res) => {
   try {
@@ -165,7 +166,6 @@ exports.getPublicByNumero = async (req, res) => {
       });
     }
 
-    // ✅ Retourner UNIQUEMENT les infos publiques (pas de données sensibles)
     const imprevusAcceptes = (reparation.diagnosticImprevus?.imprevus || [])
       .filter(i => i.accepte === true);
 
@@ -564,6 +564,17 @@ exports.update = async (req, res) => {
 
     await reparation.save();
 
+    // ✅ NOUVEAU : Envoi SMS si le statut a changé vers un statut cible
+    if (status && status !== oldValues.status?.toString()) {
+      const newStatusDoc = await Status.findById(status);
+      if (newStatusDoc) {
+        // Récupérer la réparation avec le client populé pour avoir le phone
+        const repWithClient = await Reparation.findById(reparation._id)
+          .populate('client', 'nom phone email code');
+        await smsService.sendStatusSMS(repWithClient, newStatusDoc.label);
+      }
+    }
+
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone email code')
       .populate('status', 'label color')
@@ -603,7 +614,10 @@ exports.update = async (req, res) => {
 exports.changeStatus = async (req, res) => {
   try {
     const { status, comment } = req.body;
-    const reparation = await Reparation.findById(req.params.id);
+
+    // ✅ Populate client pour avoir le téléphone
+    const reparation = await Reparation.findById(req.params.id)
+      .populate('client', 'nom phone email code');
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -640,6 +654,9 @@ exports.changeStatus = async (req, res) => {
     ];
 
     await reparation.save();
+
+    // ✅ NOUVEAU : Envoi du SMS si le statut cible
+    await smsService.sendStatusSMS(reparation, statusExists.label);
 
     const populated = await Reparation.findById(reparation._id)
       .populate('status', 'label color');
