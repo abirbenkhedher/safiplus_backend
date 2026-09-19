@@ -130,7 +130,7 @@ const reparationSchema = new mongoose.Schema({
   },
 
   // ============================================================
-  // ✅ NOUVEAU : GESTION DES DIAGNOSTICS ET IMPRÉVUS
+  // ✅ GESTION DES DIAGNOSTICS ET IMPRÉVUS
   // ============================================================
   diagnosticImprevus: {
     constat: {
@@ -190,6 +190,55 @@ const reparationSchema = new mongoose.Schema({
       }
     }
   },
+
+  // ============================================================
+  // ✅ NOUVEAU : HISTORIQUE DES SMS ENVOYÉS
+  // ============================================================
+  smsEnvoyes: [{
+    statut: {
+      type: String,
+      required: true,
+      // Le libellé du statut au moment de l'envoi (ex: "Réparé")
+    },
+    statutId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Status',
+    },
+    message: {
+      type: String,
+      required: true,
+      // Contenu du SMS envoyé
+    },
+    telephone: {
+      type: String,
+      required: true,
+      // Numéro destinataire au format E.164
+    },
+    clientNom: {
+      type: String,
+      // Nom du client (snapshot)
+    },
+    envoyePar: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      // Qui a déclenché l'envoi
+    },
+    envoyeLe: {
+      type: Date,
+      default: Date.now,
+    },
+    statutEnvoi: {
+      type: String,
+      enum: ['succes', 'echec'],
+      default: 'succes',
+    },
+    erreur: {
+      type: String,
+      default: null,
+      // Message d'erreur si échec
+    },
+  }],
 
   isDeleted: {
     type: Boolean,

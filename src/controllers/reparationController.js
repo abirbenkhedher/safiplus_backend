@@ -3,7 +3,7 @@ const Client = require('../models/Client');
 const Status = require('../models/Status');
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
-const smsService = require('../services/smsService');   // ✅ NOUVEAU : Service SMS TextBee
+const smsService = require('../services/smsService');
 
 // ============================================================
 // GET - Liste des réparations avec filtres
@@ -11,16 +11,8 @@ const smsService = require('../services/smsService');   // ✅ NOUVEAU : Service
 exports.getAll = async (req, res) => {
   try {
     const {
-      search,
-      status,
-      client,
-      reparateur,
-      createdBy,
-      dateDebut,
-      dateFin,
-      limit = 50,
-      page = 1,
-      sort = '-createdAt'
+      search, status, client, reparateur, createdBy,
+      dateDebut, dateFin, limit = 50, page = 1, sort = '-createdAt'
     } = req.query;
 
     const query = { isDeleted: false };
@@ -59,6 +51,7 @@ exports.getAll = async (req, res) => {
         .populate('reparateur', 'username firstName lastName')
         .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
         .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+        .populate('smsEnvoyes.envoyePar', 'username firstName lastName')
         .sort(sort)
         .skip(skip)
         .limit(parseInt(limit)),
@@ -107,7 +100,8 @@ exports.getOne = async (req, res) => {
       .populate('reparateur', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
       .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
-      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName');
+      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+      .populate('smsEnvoyes.envoyePar', 'username firstName lastName');
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({
@@ -136,7 +130,6 @@ exports.getOne = async (req, res) => {
 
 // ============================================================
 // GET - Route PUBLIQUE : Consulter une réparation par numéro (QR Code)
-// ✅ Accessible sans authentification
 // ============================================================
 exports.getPublicByNumero = async (req, res) => {
   try {
@@ -149,10 +142,7 @@ exports.getPublicByNumero = async (req, res) => {
       });
     }
 
-    const reparation = await Reparation.findOne({
-      numero,
-      isDeleted: false
-    })
+    const reparation = await Reparation.findOne({ numero, isDeleted: false })
       .populate('client', 'nom')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
@@ -182,9 +172,7 @@ exports.getPublicByNumero = async (req, res) => {
       success: true,
       data: {
         numero: reparation.numero,
-        client: {
-          nom: reparation.client?.nom || 'N/A',
-        },
+        client: { nom: reparation.client?.nom || 'N/A' },
         objet: reparation.objet?.nom,
         categorie: reparation.categorie?.nom,
         marque: reparation.marque,
@@ -355,7 +343,8 @@ exports.update = async (req, res) => {
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
-      representant, reparateur, datePrevisionnelle, isReparable, isNotified
+      representant, reparateur, datePrevisionnelle, isReparable, isNotified,
+      envoyerSMS = true  // ✅ NOUVEAU
     } = req.body;
 
     if (panneType !== undefined && (!panneType || !panneType.trim())) {
@@ -564,14 +553,26 @@ exports.update = async (req, res) => {
 
     await reparation.save();
 
-    // ✅ NOUVEAU : Envoi SMS si le statut a changé vers un statut cible
-    if (status && status !== oldValues.status?.toString()) {
+    // ✅ NOUVEAU : Envoi SMS si le statut a changé vers un statut cible ET si l'utilisateur l'a demandé
+    if (envoyerSMS && status && status !== oldValues.status?.toString()) {
       const newStatusDoc = await Status.findById(status);
       if (newStatusDoc) {
-        // Récupérer la réparation avec le client populé pour avoir le phone
         const repWithClient = await Reparation.findById(reparation._id)
           .populate('client', 'nom phone email code');
-        await smsService.sendStatusSMS(repWithClient, newStatusDoc.label);
+
+        const smsResult = await smsService.sendStatusSMS(
+          repWithClient,
+          newStatusDoc.label,
+          req.user.id
+        );
+
+        if (smsResult) {
+          repWithClient.smsEnvoyes = [
+            ...(repWithClient.smsEnvoyes || []),
+            smsResult,
+          ];
+          await repWithClient.save();
+        }
       }
     }
 
@@ -585,7 +586,8 @@ exports.update = async (req, res) => {
       .populate('reparateur', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
       .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
-      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName');
+      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+      .populate('smsEnvoyes.envoyePar', 'username firstName lastName');
 
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
 
@@ -613,9 +615,8 @@ exports.update = async (req, res) => {
 // ============================================================
 exports.changeStatus = async (req, res) => {
   try {
-    const { status, comment } = req.body;
+    const { status, comment, envoyerSMS = true } = req.body;
 
-    // ✅ Populate client pour avoir le téléphone
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone email code');
 
@@ -655,8 +656,22 @@ exports.changeStatus = async (req, res) => {
 
     await reparation.save();
 
-    // ✅ NOUVEAU : Envoi du SMS si le statut cible
-    await smsService.sendStatusSMS(reparation, statusExists.label);
+    // ✅ NOUVEAU : Envoi SMS si l'utilisateur l'a demandé
+    if (envoyerSMS) {
+      const smsResult = await smsService.sendStatusSMS(
+        reparation,
+        statusExists.label,
+        req.user.id
+      );
+
+      if (smsResult) {
+        reparation.smsEnvoyes = [
+          ...(reparation.smsEnvoyes || []),
+          smsResult,
+        ];
+        await reparation.save();
+      }
+    }
 
     const populated = await Reparation.findById(reparation._id)
       .populate('status', 'label color');
