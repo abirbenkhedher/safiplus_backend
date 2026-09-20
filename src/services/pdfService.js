@@ -6,7 +6,6 @@ const QRCode = require('qrcode');
 
 // Configuration du ticket
 const TICKET_CONFIG = {
-  // Largeur du papier en points (58mm = 164pt, 80mm = 226pt)
   width: 226, // 80mm par défaut
   margins: {
     top: 10,
@@ -47,6 +46,28 @@ const centerText = (text, width = 48) => {
 };
 
 /**
+ * Coupe un texte en lignes de largeur donnée
+ */
+const wrapText = (text, width) => {
+  if (!text) return [''];
+  const words = String(text).split(' ');
+  const lines = [];
+  let currentLine = '';
+
+  words.forEach(word => {
+    if ((currentLine + word).length <= width) {
+      currentLine += (currentLine ? ' ' : '') + word;
+    } else {
+      if (currentLine) lines.push(currentLine);
+      currentLine = word.length > width ? word.substring(0, width) : word;
+    }
+  });
+
+  if (currentLine) lines.push(currentLine);
+  return lines.length ? lines : [''];
+};
+
+/**
  * Génère le contenu du ticket pour une réparation
  */
 const generateTicketContent = (reparation, options = {}) => {
@@ -55,7 +76,7 @@ const generateTicketContent = (reparation, options = {}) => {
     boutiqueAddress = process.env.BOUTIQUE_ADDRESS || 'Adresse non configurée',
     boutiquePhone = process.env.BOUTIQUE_PHONE || 'Tél: XX XXX XXX',
     boutiqueEmail = process.env.BOUTIQUE_EMAIL || '',
-    width = 48, // 48 caractères pour 80mm
+    width = 48,
     footerMessage = 'Merci de votre confiance!'
   } = options;
 
@@ -117,7 +138,7 @@ const generateTicketContent = (reparation, options = {}) => {
   // Séparateur
   lines.push({ text: '-'.repeat(width), size: 'small' });
 
-  // ✅ TYPE DE PANNE (au lieu de Problème déclaré)
+  // TYPE DE PANNE
   lines.push({ text: 'TYPE DE PANNE', size: 'normal', bold: true });
   const panneLines = wrapText(reparation.panneType, width);
   panneLines.forEach(line => {
@@ -174,35 +195,13 @@ const generateTicketContent = (reparation, options = {}) => {
 };
 
 /**
- * Coupe un texte en lignes de largeur donnée
- */
-const wrapText = (text, width) => {
-  if (!text) return [''];
-  const words = String(text).split(' ');
-  const lines = [];
-  let currentLine = '';
-
-  words.forEach(word => {
-    if ((currentLine + word).length <= width) {
-      currentLine += (currentLine ? ' ' : '') + word;
-    } else {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word.length > width ? word.substring(0, width) : word;
-    }
-  });
-
-  if (currentLine) lines.push(currentLine);
-  return lines.length ? lines : [''];
-};
-
-/**
  * Génère un PDF au format ticket thermique
  */
 const generateTicketPDF = (reparation, options = {}) => {
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocument({
-        size: [TICKET_CONFIG.width, 1000], // Hauteur dynamique
+        size: [TICKET_CONFIG.width, 1000],
         margins: TICKET_CONFIG.margins,
         autoFirstPage: true
       });
@@ -217,7 +216,6 @@ const generateTicketPDF = (reparation, options = {}) => {
 
       const content = generateTicketContent(reparation, options);
 
-      // Écrire le contenu
       content.forEach(item => {
         const fontSize = TICKET_CONFIG.fontSizes[item.size] || TICKET_CONFIG.fontSizes.normal;
         doc.fontSize(fontSize);
@@ -244,6 +242,7 @@ const generateTicketPDF = (reparation, options = {}) => {
 
 /**
  * Génère le contenu HTML pour impression navigateur (format ticket)
+ * ✅ Le QR code contient la MÊME URL que la page détails
  */
 const generateTicketHTML = async (reparation, options = {}) => {
   const {
@@ -256,35 +255,19 @@ const generateTicketHTML = async (reparation, options = {}) => {
 
   const reparationData = reparation.toObject ? reparation.toObject() : reparation;
 
-  const qrData = [
-    `=== RÉPARATION ${reparationData.numero} ===`,
-    ``,
-    `👤 CLIENT`,
-    `Nom: ${reparationData.client?.nom || 'N/A'}`,
-    `Code: ${reparationData.client?.code || 'N/A'}`,
-    `Tél: ${reparationData.client?.phone || 'N/A'}`,
-    ``,
-    `📱 APPAREIL`,
-    `Type: ${reparationData.objet?.nom || 'N/A'}`,
-    `Marque/Modèle: ${reparationData.marque || ''} ${reparationData.modele || ''}`,
-    reparationData.numeroSerie ? `IMEI: ${reparationData.numeroSerie}` : '',
-    ``,
-    `📅 DATES`,
-    `Reçu le: ${new Date(reparationData.createdAt).toLocaleDateString('fr-FR')}`,
-    reparationData.datePrevisionnelle 
-      ? `Prévu le: ${new Date(reparationData.datePrevisionnelle).toLocaleDateString('fr-FR')}`
-      : 'Prévu le: -',
-    ``,
-    `💰 PAIEMENT`,
-    `Total: ${(reparationData.prix || 0).toFixed(2)} DT`,
-    `Acompte: ${(reparationData.acompte || 0).toFixed(2)} DT`,
-    `Reste: ${((reparationData.prix || 0) - (reparationData.acompte || 0)).toFixed(2)} DT`,
-    ``,
-    `⚙️ STATUT`,
-    `État: ${reparationData.status?.label || 'N/A'}`,
-  ].filter(Boolean).join('\n');
+  // ============================================================
+  // ✅ QR CODE : EXACTEMENT la même URL que la page détails
+  // ============================================================
+  const frontendUrl = 
+    process.env.FRONTEND_URL ||        
+    process.env.CLIENT_URL ||          
+    'http://localhost:5173';           
 
-  // ✅ Générer le QR code en base64 (Data URL)
+  const qrData = `${frontendUrl}/suivi/${reparationData.numero}`;
+
+  console.log('🎫 QR Code ticket généré:', qrData);
+
+  // ✅ Générer le QR code en base64
   let qrCodeDataUrl = '';
   try {
     qrCodeDataUrl = await QRCode.toDataURL(qrData, {
@@ -381,6 +364,13 @@ const generateTicketHTML = async (reparation, options = {}) => {
       width: 100px;
       height: 100px;
     }
+    .qr-code-url {
+      font-size: 7px;
+      color: #666;
+      margin-top: 2px;
+      word-break: break-all;
+      line-height: 1.1;
+    }
 
   </style>
 </head>
@@ -423,7 +413,7 @@ const generateTicketHTML = async (reparation, options = {}) => {
   ${reparationData.accessoires ? `<div class="row small"><span>Accessoires:</span><span>${reparationData.accessoires}</span></div>` : ''}
   <div class="separator"></div>
 
-  <!-- ✅ TYPE DE PANNE (au lieu de Problème déclaré) -->
+  <!-- TYPE DE PANNE -->
   <div class="section-title">Type de panne</div>
   <div class="small">${reparationData.panneType || 'N/A'}</div>
   <div class="separator"></div>
@@ -446,11 +436,13 @@ const generateTicketHTML = async (reparation, options = {}) => {
   <div class="small">${reparationData.observation}</div>
   ` : ''}
 
+  <!-- ✅ QR CODE identique à la page détails -->
   ${qrCodeDataUrl ? `
   <div class="separator"></div>
   <div class="qr-code">
     <img src="${qrCodeDataUrl}" alt="QR Code" />
-    <div class="small">Scannez pour le suivi</div>
+    <div class="small">📱 Scannez pour suivre votre réparation</div>
+    <div class="qr-code-url">${qrData}</div>
   </div>
   ` : ''}
 
