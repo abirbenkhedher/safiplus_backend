@@ -3,22 +3,63 @@ const logger = require('../config/logger');
 // ✅ URL de base de l'API TextBee
 const TEXTBEE_API_URL = 'https://api.textbee.dev/api/v1/gateway/send-sms';
 
-// ✅ Templates des messages par statut
+// ============================================================
+// ✅ NORMALISATION DU LIBELLÉ DE STATUT
+// Supprime accents, espaces, casse, caractères spéciaux
+// Ex: "NON REPARE"  -> "NONREPARE"
+//     "Réparé"      -> "REPARE"
+//     "SAV Réparé"  -> "SAVREPARE"
+// ============================================================
+const normalizeStatus = (label) => {
+  if (!label) return '';
+  return String(label)
+    .normalize('NFD')                    // Décompose les accents
+    .replace(/[\u0300-\u036f]/g, '')     // Supprime les diacritiques
+    .toUpperCase()                       // Majuscules
+    .replace(/[^A-Z0-9]/g, '');          // Garde uniquement A-Z et 0-9
+};
+
+// ============================================================
+// ✅ TEMPLATES DES SMS
+// ⚠️ IMPORTANT : les clés doivent être NORMALISÉES
+// (majuscules, sans espaces, sans accents, sans tirets)
+// ============================================================
 const SMS_TEMPLATES = {
   'REPARE': (client, numero, boutique) =>
     `Bonjour ${client}, votre réparation ${numero} est terminée. Vous pouvez venir la récupérer. - ${boutique}`,
 
-  'NON REPARE': (client, numero, boutique) =>
+  'NONREPARE': (client, numero, boutique) =>
     `Bonjour ${client}, votre appareil ${numero} n'a pas pu être réparé. Contactez-nous pour plus d'informations. - ${boutique}`,
+
+  'SORTIENONREPARE': (client, numero, boutique) =>
+    `Bonjour ${client}, votre appareil ${numero} est disponible au retrait (non réparé). Merci de venir le récupérer. - ${boutique}`,
 
   'SAV': (client, numero, boutique) =>
     `Bonjour ${client}, votre appareil ${numero} a été transmis au service après-vente. - ${boutique}`,
 
-  'SAV REPARE': (client, numero, boutique) =>
+  'SAVREPARE': (client, numero, boutique) =>
     `Bonjour ${client}, votre appareil ${numero} est de retour du SAV et est prêt. - ${boutique}`,
 
-  'SAV NON REPARE': (client, numero, boutique) =>
+  'SAVNONREPARE': (client, numero, boutique) =>
     `Bonjour ${client}, le SAV n'a pas pu réparer votre appareil ${numero}. Vous pouvez venir le récupérer. - ${boutique}`,
+};
+
+// ============================================================
+// ✅ Récupération du template (avec normalisation + logs debug)
+// ============================================================
+const getTemplate = (statusLabel) => {
+  const normalized = normalizeStatus(statusLabel);
+  const template = SMS_TEMPLATES[normalized] || null;
+
+  logger.info(
+    `🔍 Template SMS: brut="${statusLabel}" -> normalisé="${normalized}" -> ${template ? '✅ trouvé' : '❌ NON TROUVÉ'}`
+  );
+
+  if (!template) {
+    logger.info(`   Clés disponibles: [${Object.keys(SMS_TEMPLATES).join(', ')}]`);
+  }
+
+  return template;
 };
 
 /**
@@ -36,8 +77,8 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
       return null;
     }
 
-    // 2. Vérifier qu'un template existe pour ce statut
-    const template = SMS_TEMPLATES[statusLabel];
+    // 2. Vérifier qu'un template existe pour ce statut (avec normalisation)
+    const template = getTemplate(statusLabel);
     if (!template) {
       logger.info(`ℹ️ Pas de SMS configuré pour le statut "${statusLabel}"`);
       return null;
@@ -50,7 +91,7 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
     }
 
     // 4. Construire le message
-    const boutiqueName = process.env.BOUTIQUE_NAME || 'ATELIER PRO';
+    const boutiqueName = process.env.BOUTIQUE_NAME || 'safi info +';
     const messageBody = template(
       reparation.client.nom || 'Client',
       reparation.numero,
@@ -99,9 +140,10 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
     };
   } catch (error) {
     logger.error(`❌ Échec SMS pour ${reparation.numero}:`, error.message);
+    logger.error(`   Stack:`, error.stack);
 
     // ✅ Retourner un enregistrement d'échec pour l'historique
-    const template = SMS_TEMPLATES[statusLabel];
+    const template = getTemplate(statusLabel);
     return {
       statut: statusLabel,
       statutId: reparation.status?._id || reparation.status,
@@ -109,7 +151,7 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
         ? template(
             reparation.client?.nom || 'Client',
             reparation.numero,
-            process.env.BOUTIQUE_NAME || 'ATELIER PRO'
+            process.env.BOUTIQUE_NAME || 'safi info +'
           )
         : 'SMS',
       telephone: reparation.client?.phone || 'N/A',
@@ -140,3 +182,7 @@ function formatPhoneNumber(phone) {
   }
   return cleaned;
 }
+
+// ✅ Exports pour debug et tests
+exports.normalizeStatus = normalizeStatus;
+exports.getTemplate = getTemplate;

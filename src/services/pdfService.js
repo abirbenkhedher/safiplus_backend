@@ -117,10 +117,10 @@ const generateTicketContent = (reparation, options = {}) => {
   // Séparateur
   lines.push({ text: '-'.repeat(width), size: 'small' });
 
-  // Problème
-  lines.push({ text: 'PROBLÈME DÉCLARÉ', size: 'normal', bold: true });
-  const problemeLines = wrapText(reparation.problemeDeclare, width);
-  problemeLines.forEach(line => {
+  // ✅ TYPE DE PANNE (au lieu de Problème déclaré)
+  lines.push({ text: 'TYPE DE PANNE', size: 'normal', bold: true });
+  const panneLines = wrapText(reparation.panneType, width);
+  panneLines.forEach(line => {
     lines.push({ text: line, size: 'small' });
   });
 
@@ -423,9 +423,9 @@ const generateTicketHTML = async (reparation, options = {}) => {
   ${reparationData.accessoires ? `<div class="row small"><span>Accessoires:</span><span>${reparationData.accessoires}</span></div>` : ''}
   <div class="separator"></div>
 
-  <!-- Problème -->
-  <div class="section-title">Problème déclaré</div>
-  <div class="small">${reparationData.problemeDeclare || 'N/A'}</div>
+  <!-- ✅ TYPE DE PANNE (au lieu de Problème déclaré) -->
+  <div class="section-title">Type de panne</div>
+  <div class="small">${reparationData.panneType || 'N/A'}</div>
   <div class="separator"></div>
 
   <!-- Finances -->
