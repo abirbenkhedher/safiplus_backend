@@ -32,10 +32,7 @@ const reparationSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-  numeroSerie: {
-    type: String,
-    trim: true
-  },
+ 
   accessoires: {
     type: String,
     trim: true

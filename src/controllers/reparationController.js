@@ -177,7 +177,6 @@ exports.getPublicByNumero = async (req, res) => {
         categorie: reparation.categorie?.nom,
         marque: reparation.marque,
         modele: reparation.modele,
-        numeroSerie: reparation.numeroSerie,
         panneType: reparation.panneType,
         problemeDeclare: reparation.problemeDeclare,
         status: {
@@ -223,7 +222,7 @@ exports.getPublicByNumero = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const {
-      client, categorie, objet, marque, modele, numeroSerie, accessoires,
+      client, categorie, objet, marque, modele, accessoires,
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
@@ -258,7 +257,7 @@ exports.create = async (req, res) => {
     const cleanObservations = (observations || []).filter(o => o.text && o.text.trim() !== '');
 
     const reparation = new Reparation({
-      client, categorie, objet, marque, modele, numeroSerie, accessoires,
+      client, categorie, objet, marque, modele, accessoires,
       problemeDeclare, panneType, note, observation,
       observations: cleanObservations,
       diagnostic,
@@ -339,7 +338,7 @@ exports.update = async (req, res) => {
     }
 
     const {
-      categorie, objet, marque, modele, numeroSerie, accessoires,
+      categorie, objet, marque, modele, accessoires,
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
@@ -366,7 +365,6 @@ exports.update = async (req, res) => {
       objet: reparation.objet,
       marque: reparation.marque,
       modele: reparation.modele,
-      numeroSerie: reparation.numeroSerie,
       accessoires: reparation.accessoires,
       problemeDeclare: reparation.problemeDeclare,
       panneType: reparation.panneType,
@@ -390,7 +388,6 @@ exports.update = async (req, res) => {
     reparation.objet = objet || reparation.objet;
     reparation.marque = marque || reparation.marque;
     reparation.modele = modele !== undefined ? modele : reparation.modele;
-    reparation.numeroSerie = numeroSerie !== undefined ? numeroSerie : reparation.numeroSerie;
     reparation.accessoires = accessoires !== undefined ? accessoires : reparation.accessoires;
     reparation.problemeDeclare = problemeDeclare !== undefined ? problemeDeclare : reparation.problemeDeclare;
     reparation.panneType = panneType !== undefined ? panneType : reparation.panneType;
@@ -478,7 +475,7 @@ exports.update = async (req, res) => {
     const trackedFields = [
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
-      'numeroSerie', 'accessoires', 'datePrevisionnelle',
+       'accessoires', 'datePrevisionnelle',
       'categorie', 'objet', 'observation',
       'diagnostic', 'diagnosticImprevus', 'travauxEffectues', 'piecesUtilisees',
       'isReparable', 'isNotified',

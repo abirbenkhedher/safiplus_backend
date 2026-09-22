@@ -128,9 +128,7 @@ const generateTicketContent = (reparation, options = {}) => {
   if (reparation.modele) {
     lines.push({ text: formatLine('Modèle:', reparation.modele, width), size: 'small' });
   }
-  if (reparation.numeroSerie) {
-    lines.push({ text: formatLine('N° Série:', reparation.numeroSerie, width), size: 'small' });
-  }
+ 
   if (reparation.accessoires) {
     lines.push({ text: formatLine('Accessoires:', reparation.accessoires, width), size: 'small' });
   }
@@ -409,7 +407,6 @@ const generateTicketHTML = async (reparation, options = {}) => {
   ${reparationData.categorie ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>` : ''}
   <div class="row small"><span>Marque:</span><span>${reparationData.marque || 'N/A'}</span></div>
   ${reparationData.modele ? `<div class="row small"><span>Modèle:</span><span>${reparationData.modele}</span></div>` : ''}
-  ${reparationData.numeroSerie ? `<div class="row small"><span>N° Série:</span><span>${reparationData.numeroSerie}</span></div>` : ''}
   ${reparationData.accessoires ? `<div class="row small"><span>Accessoires:</span><span>${reparationData.accessoires}</span></div>` : ''}
   <div class="separator"></div>
 
