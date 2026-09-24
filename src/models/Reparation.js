@@ -39,10 +39,16 @@ modele: {
     trim: true
   },
   panneType: {
-    type: String,
-    required: [true, 'Le type de panne est obligatoire'],
-    trim: true
+  type: [String],
+  required: [true, 'Le type de panne est obligatoire'],
+  validate: {
+    validator: function(arr) {
+      return Array.isArray(arr) && arr.length > 0;
+    },
+    message: 'Au moins une panne est obligatoire'
   },
+  default: []
+},
   problemeDeclare: {
     type: String,
     trim: true,

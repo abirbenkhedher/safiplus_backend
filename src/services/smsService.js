@@ -1,28 +1,26 @@
 const logger = require('../config/logger');
 
-// ✅ URL de base de l'API TextBee
 const TEXTBEE_API_URL = 'https://api.textbee.dev/api/v1/gateway/send-sms';
 
 // ============================================================
-// ✅ NORMALISATION DU LIBELLÉ DE STATUT
-// Supprime accents, espaces, casse, caractères spéciaux
-// Ex: "NON REPARE"  -> "NONREPARE"
-//     "Réparé"      -> "REPARE"
-//     "SAV Réparé"  -> "SAVREPARE"
+// ✅ CONSTANTE : numéro par défaut (client sans téléphone)
+// ============================================================
+const DEFAULT_PHONE = '00000000';
+
+// ============================================================
+// ✅ Normalisation du libellé de statut
 // ============================================================
 const normalizeStatus = (label) => {
   if (!label) return '';
   return String(label)
-    .normalize('NFD')                    // Décompose les accents
-    .replace(/[\u0300-\u036f]/g, '')     // Supprime les diacritiques
-    .toUpperCase()                       // Majuscules
-    .replace(/[^A-Z0-9]/g, '');          // Garde uniquement A-Z et 0-9
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 };
 
 // ============================================================
-// ✅ TEMPLATES DES SMS
-// ⚠️ IMPORTANT : les clés doivent être NORMALISÉES
-// (majuscules, sans espaces, sans accents, sans tirets)
+// ✅ Templates des SMS
 // ============================================================
 const SMS_TEMPLATES = {
   'REPARE': (client, numero, boutique) =>
@@ -45,7 +43,7 @@ const SMS_TEMPLATES = {
 };
 
 // ============================================================
-// ✅ Récupération du template (avec normalisation + logs debug)
+// ✅ Récupération du template (avec normalisation)
 // ============================================================
 const getTemplate = (statusLabel) => {
   const normalized = normalizeStatus(statusLabel);
@@ -55,20 +53,21 @@ const getTemplate = (statusLabel) => {
     `🔍 Template SMS: brut="${statusLabel}" -> normalisé="${normalized}" -> ${template ? '✅ trouvé' : '❌ NON TROUVÉ'}`
   );
 
-  if (!template) {
-    logger.info(`   Clés disponibles: [${Object.keys(SMS_TEMPLATES).join(', ')}]`);
-  }
-
   return template;
 };
 
-/**
- * ✅ Envoie un SMS et retourne le résultat détaillé
- * @param {Object} reparation - La réparation (avec client populé)
- * @param {string} statusLabel - Le libellé du nouveau statut
- * @param {string} userId - L'ID de l'utilisateur qui déclenche
- * @returns {Promise<Object|null>} - Détail du SMS envoyé ou null
- */
+// ============================================================
+// ✅ Vérifier si un numéro est le numéro par défaut
+// ============================================================
+const isDefaultPhone = (phone) => {
+  if (!phone) return true;
+  const cleaned = String(phone).replace(/[^0-9]/g, '');
+  return cleaned === DEFAULT_PHONE;
+};
+
+// ============================================================
+// ✅ Envoie un SMS
+// ============================================================
 exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
   try {
     // 1. Vérifier que le client a un téléphone
@@ -77,20 +76,28 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
       return null;
     }
 
-    // 2. Vérifier qu'un template existe pour ce statut (avec normalisation)
+    // ✅ 2. Ne PAS envoyer si c'est le numéro par défaut
+    if (isDefaultPhone(reparation.client.phone)) {
+      logger.info(
+        `⏭️ SMS ignoré pour ${reparation.numero} : client sans téléphone (${reparation.client.phone})`
+      );
+      return null;
+    }
+
+    // 3. Vérifier qu'un template existe pour ce statut
     const template = getTemplate(statusLabel);
     if (!template) {
       logger.info(`ℹ️ Pas de SMS configuré pour le statut "${statusLabel}"`);
       return null;
     }
 
-    // 3. Vérifier que l'API est configurée
+    // 4. Vérifier que l'API est configurée
     if (!process.env.TEXTBEE_API_KEY) {
       logger.warn('⚠️ TEXTBEE_API_KEY non configurée, SMS non envoyé');
       return null;
     }
 
-    // 4. Construire le message
+    // 5. Construire le message
     const boutiqueName = process.env.BOUTIQUE_NAME || 'safi info +';
     const messageBody = template(
       reparation.client.nom || 'Client',
@@ -98,14 +105,14 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
       boutiqueName
     );
 
-    // 5. Formater le numéro (E.164 recommandé)
+    // 6. Formater le numéro
     const phone = formatPhoneNumber(reparation.client.phone);
     if (!phone) {
       logger.warn(`⚠️ Numéro invalide : ${reparation.client.phone}`);
       return null;
     }
 
-    // 6. Envoi via TextBee
+    // 7. Envoi via TextBee
     const response = await fetch(TEXTBEE_API_URL, {
       method: 'POST',
       headers: {
@@ -124,9 +131,8 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
 
-    logger.info(`✅ SMS envoyé à ${phone} pour ${reparation.numero} (statut: ${statusLabel})`);
+    logger.info(`✅ SMS envoyé à ${phone} pour ${reparation.numero}`);
 
-    // ✅ Retourner le détail pour l'historique
     return {
       statut: statusLabel,
       statutId: reparation.status?._id || reparation.status,
@@ -140,9 +146,7 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
     };
   } catch (error) {
     logger.error(`❌ Échec SMS pour ${reparation.numero}:`, error.message);
-    logger.error(`   Stack:`, error.stack);
 
-    // ✅ Retourner un enregistrement d'échec pour l'historique
     const template = getTemplate(statusLabel);
     return {
       statut: statusLabel,
@@ -164,13 +168,13 @@ exports.sendStatusSMS = async (reparation, statusLabel, userId) => {
   }
 };
 
-/**
- * ✅ Formate un numéro de téléphone au format E.164
- */
+// ============================================================
+// ✅ Formate un numéro au format E.164
+// ============================================================
 function formatPhoneNumber(phone) {
   if (!phone) return null;
   let cleaned = phone.replace(/[^\d+]/g, '');
-  
+
   if (!cleaned.startsWith('+')) {
     if (cleaned.startsWith('216')) {
       cleaned = '+' + cleaned;
@@ -183,6 +187,5 @@ function formatPhoneNumber(phone) {
   return cleaned;
 }
 
-// ✅ Exports pour debug et tests
 exports.normalizeStatus = normalizeStatus;
 exports.getTemplate = getTemplate;

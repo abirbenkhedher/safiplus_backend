@@ -1,6 +1,8 @@
 const Reparation = require('../models/Reparation');
 const Client = require('../models/Client');
 const Status = require('../models/Status');
+const Marque = require('../models/Marque');
+const Modele = require('../models/Modele');
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
@@ -43,10 +45,6 @@ exports.getAll = async (req, res) => {
 
     // ✅ Recherche globale multi-champs
     if (search) {
-      // Rechercher aussi dans Marque et Modele (par nom)
-      const Marque = require('../models/Marque');
-      const Modele = require('../models/Modele');
-
       const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
         Client.find({
           $or: [
@@ -57,12 +55,8 @@ exports.getAll = async (req, res) => {
             { adresse: { $regex: search, $options: 'i' } },
           ],
         }).select('_id'),
-        Marque.find({
-          nom: { $regex: search, $options: 'i' },
-        }).select('_id'),
-        Modele.find({
-          nom: { $regex: search, $options: 'i' },
-        }).select('_id'),
+        Marque.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
+        Modele.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
       ]);
 
       const clientIds = matchingClients.map((c) => c._id);
@@ -72,9 +66,8 @@ exports.getAll = async (req, res) => {
       query.$or = [
         { numero: { $regex: search, $options: 'i' } },
         { problemeDeclare: { $regex: search, $options: 'i' } },
-        { panneType: { $regex: search, $options: 'i' } },
+        { panneType: { $regex: search, $options: 'i' } },   // ✅ Recherche dans le tableau
         { note: { $regex: search, $options: 'i' } },
-        { accessoires: { $regex: search, $options: 'i' } },
         ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
         ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
         ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
@@ -99,7 +92,6 @@ exports.getAll = async (req, res) => {
         .populate('status', 'label color parDefault')
         .populate('categorie', 'nom')
         .populate('objet', 'nom')
-        // ✅ Marque et Modèle populés
         .populate('marque', 'nom')
         .populate('modele', 'nom')
         .populate('createdBy', 'username firstName lastName')
@@ -151,7 +143,6 @@ exports.getOne = async (req, res) => {
       .populate('status', 'label color parDefault')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
-      // ✅ Marque et Modèle populés
       .populate('marque', 'nom')
       .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
@@ -206,7 +197,6 @@ exports.getPublicByNumero = async (req, res) => {
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
-      // ✅ Marque et Modèle populés
       .populate('marque', 'nom')
       .populate('modele', 'nom')
       .populate('reparateur', 'firstName lastName');
@@ -242,10 +232,10 @@ exports.getPublicByNumero = async (req, res) => {
         },
         objet: reparation.objet?.nom,
         categorie: reparation.categorie?.nom,
-        // ✅ Extraction des noms depuis les objets populés
         marque: reparation.marque?.nom || null,
         modele: reparation.modele?.nom || null,
-        panneType: reparation.panneType,
+        // ✅ panneType est maintenant un tableau
+        panneType: reparation.panneType || [],
         problemeDeclare: reparation.problemeDeclare,
         status: {
           label: reparation.status?.label,
@@ -290,7 +280,7 @@ exports.getPublicByNumero = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const {
-      client, categorie, objet, marque, modele, accessoires,
+      client, categorie, objet, marque, modele,
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
@@ -307,16 +297,28 @@ exports.create = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Statut non trouvé' });
     }
 
-    if (!panneType || !panneType.trim()) {
+    // ✅ Valider que panneType est un tableau non vide
+    if (!panneType || !Array.isArray(panneType) || panneType.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Le type de panne est obligatoire'
+        message: 'Au moins une panne est obligatoire'
+      });
+    }
+
+    // Nettoyer et filtrer les vides
+    const cleanPanneTypes = panneType
+      .filter((p) => p && typeof p === 'string' && p.trim() !== '')
+      .map((p) => p.trim());
+
+    if (cleanPanneTypes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Au moins une panne valide est obligatoire'
       });
     }
 
     // ✅ Valider la marque si fournie
     if (marque) {
-      const Marque = require('../models/Marque');
       const marqueExists = await Marque.findById(marque);
       if (!marqueExists) {
         return res.status(400).json({ success: false, message: 'Marque non trouvée' });
@@ -325,7 +327,6 @@ exports.create = async (req, res) => {
 
     // ✅ Valider le modèle si fourni
     if (modele) {
-      const Modele = require('../models/Modele');
       const modeleExists = await Modele.findById(modele);
       if (!modeleExists) {
         return res.status(400).json({ success: false, message: 'Modèle non trouvé' });
@@ -344,10 +345,11 @@ exports.create = async (req, res) => {
 
     const reparation = new Reparation({
       client, categorie, objet,
-      marque: marque || null,      // ✅ ObjectId
-      modele: modele || null,      // ✅ ObjectId
-      accessoires,
-      problemeDeclare, panneType, note, observation,
+      marque: marque || null,
+      modele: modele || null,
+      problemeDeclare,
+      panneType: cleanPanneTypes,   // ✅ Tableau nettoyé
+      note, observation,
       observations: cleanObservations,
       diagnostic,
       diagnosticImprevus: {
@@ -429,7 +431,7 @@ exports.update = async (req, res) => {
     }
 
     const {
-      categorie, objet, marque, modele, accessoires,
+      categorie, objet, marque, modele,
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
@@ -437,11 +439,26 @@ exports.update = async (req, res) => {
       envoyerSMS = false
     } = req.body;
 
-    if (panneType !== undefined && (!panneType || !panneType.trim())) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le type de panne est obligatoire'
-      });
+    // ✅ Valider panneType si fourni
+    let cleanPanneTypes = null;
+    if (panneType !== undefined) {
+      if (!Array.isArray(panneType)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Le type de panne doit être un tableau'
+        });
+      }
+
+      cleanPanneTypes = panneType
+        .filter((p) => p && typeof p === 'string' && p.trim() !== '')
+        .map((p) => p.trim());
+
+      if (cleanPanneTypes.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Au moins une panne est obligatoire'
+        });
+      }
     }
 
     if (status && status !== reparation.status.toString()) {
@@ -455,7 +472,6 @@ exports.update = async (req, res) => {
     if (marque !== undefined && marque !== null && marque !== '') {
       const currentMarqueId = reparation.marque ? reparation.marque.toString() : null;
       if (marque !== currentMarqueId) {
-        const Marque = require('../models/Marque');
         const marqueExists = await Marque.findById(marque);
         if (!marqueExists) {
           return res.status(400).json({ success: false, message: 'Marque non trouvée' });
@@ -467,7 +483,6 @@ exports.update = async (req, res) => {
     if (modele !== undefined && modele !== null && modele !== '') {
       const currentModeleId = reparation.modele ? reparation.modele.toString() : null;
       if (modele !== currentModeleId) {
-        const Modele = require('../models/Modele');
         const modeleExists = await Modele.findById(modele);
         if (!modeleExists) {
           return res.status(400).json({ success: false, message: 'Modèle non trouvé' });
@@ -480,9 +495,8 @@ exports.update = async (req, res) => {
       objet: reparation.objet,
       marque: reparation.marque,
       modele: reparation.modele,
-      accessoires: reparation.accessoires,
       problemeDeclare: reparation.problemeDeclare,
-      panneType: reparation.panneType,
+      panneType: [...(reparation.panneType || [])],   // ✅ Copie du tableau
       note: reparation.note,
       observation: reparation.observation,
       observations: reparation.observations,
@@ -501,12 +515,13 @@ exports.update = async (req, res) => {
 
     reparation.categorie = categorie || reparation.categorie;
     reparation.objet = objet || reparation.objet;
-    // ✅ Marque et Modèle : ObjectId ou null
     reparation.marque = marque !== undefined ? (marque || null) : reparation.marque;
     reparation.modele = modele !== undefined ? (modele || null) : reparation.modele;
-    reparation.accessoires = accessoires !== undefined ? accessoires : reparation.accessoires;
     reparation.problemeDeclare = problemeDeclare !== undefined ? problemeDeclare : reparation.problemeDeclare;
-    reparation.panneType = panneType !== undefined ? panneType : reparation.panneType;
+    // ✅ Mettre à jour panneType si fourni
+    if (cleanPanneTypes !== null) {
+      reparation.panneType = cleanPanneTypes;
+    }
     reparation.note = note !== undefined ? note : reparation.note;
     reparation.observation = observation !== undefined ? observation : reparation.observation;
 
@@ -585,7 +600,7 @@ exports.update = async (req, res) => {
     const trackedFields = [
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
-      'accessoires', 'datePrevisionnelle',
+      'datePrevisionnelle',
       'categorie', 'objet', 'observation',
       'diagnostic', 'diagnosticImprevus', 'travauxEffectues', 'piecesUtilisees',
       'isReparable', 'isNotified',
@@ -604,6 +619,11 @@ exports.update = async (req, res) => {
       if (field === 'observations') {
         const oldStr = JSON.stringify((oldVal || []).map(o => ({ text: o.text || '' })));
         const newStr = JSON.stringify((newVal || []).map(o => ({ text: o.text || '' })));
+        changed = oldStr !== newStr;
+      } else if (field === 'panneType') {
+        // ✅ Comparer les tableaux de pannes (triés pour ignorer l'ordre)
+        const oldStr = JSON.stringify([...(oldVal || [])].sort());
+        const newStr = JSON.stringify([...(newVal || [])].sort());
         changed = oldStr !== newStr;
       } else if (field === 'diagnosticImprevus') {
         const oldStr = JSON.stringify({
@@ -634,7 +654,6 @@ exports.update = async (req, res) => {
       } else if (typeof oldVal === 'boolean' || typeof newVal === 'boolean') {
         changed = Boolean(oldVal) !== Boolean(newVal);
       } else {
-        // Pour les ObjectId (marque, modele), comparer avec toString()
         const oldStr = oldVal?.toString() || '';
         const newStr = newVal?.toString() || '';
         changed = oldStr !== newStr;

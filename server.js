@@ -20,6 +20,7 @@ const historyRoutes = require('./src/routes/historyRoutes');
 const teamMessagesRouter = require('./src/routes/teamMessages');
 const marquesRoutes =  require('./src/routes/marquesRoutes');
 const modelesRoutes =  require('./src/routes/modelesRoutes');
+const pannesRoutes =  require('./src/routes/pannesRoutes');
 
 
 const app = express();
@@ -59,6 +60,7 @@ app.use('/api/history', historyRoutes);
 app.use('/api/team-messages', teamMessagesRouter);
 app.use('/api/marques', marquesRoutes);
 app.use('/api/modeles', modelesRoutes);
+app.use('/api/pannes', pannesRoutes);
 
 
 // Error handler

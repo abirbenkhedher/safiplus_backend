@@ -78,6 +78,18 @@ const getNom = (field) => {
 };
 
 /**
+ * ✅ Helper : formate un tableau de pannes en string séparée par virgule
+ */
+const formatPannes = (pannes) => {
+  if (!pannes) return 'N/A';
+  if (typeof pannes === 'string') return pannes;
+  if (Array.isArray(pannes) && pannes.length > 0) {
+    return pannes.filter(Boolean).join(', ');
+  }
+  return 'N/A';
+};
+
+/**
  * Génère le contenu du ticket pour une réparation
  */
 const generateTicketContent = (reparation, options = {}) => {
@@ -154,16 +166,13 @@ const generateTicketContent = (reparation, options = {}) => {
     lines.push({ text: formatLine('Modèle:', modeleNom, width), size: 'small' });
   }
 
-  if (reparation.accessoires) {
-    lines.push({ text: formatLine('Accessoires:', reparation.accessoires, width), size: 'small' });
-  }
-
   // Séparateur
   lines.push({ text: '-'.repeat(width), size: 'small' });
 
-  // TYPE DE PANNE
+  // ✅ TYPE DE PANNE (multi-pannes séparées par virgule)
   lines.push({ text: 'TYPE DE PANNE', size: 'normal', bold: true });
-  const panneLines = wrapText(reparation.panneType, width);
+  const panneText = formatPannes(reparation.panneType);
+  const panneLines = wrapText(panneText, width);
   panneLines.forEach(line => {
     lines.push({ text: line, size: 'small' });
   });
@@ -307,6 +316,9 @@ const generateTicketHTML = async (reparation, options = {}) => {
   const marqueNom = getNom(reparationData.marque) || 'N/A';
   const modeleNom = getNom(reparationData.modele);
 
+  // ✅ Formatage des pannes (multi-pannes)
+  const pannesTexte = formatPannes(reparationData.panneType);
+
   const html = `
 <!DOCTYPE html>
 <html>
@@ -438,12 +450,11 @@ const generateTicketHTML = async (reparation, options = {}) => {
   ${reparationData.categorie ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>` : ''}
   <div class="row small"><span>Marque:</span><span>${marqueNom}</span></div>
   ${modeleNom ? `<div class="row small"><span>Modèle:</span><span>${modeleNom}</span></div>` : ''}
-  ${reparationData.accessoires ? `<div class="row small"><span>Accessoires:</span><span>${reparationData.accessoires}</span></div>` : ''}
   <div class="separator"></div>
 
-  <!-- TYPE DE PANNE -->
+  <!-- ✅ TYPE DE PANNE (multi) -->
   <div class="section-title">Type de panne</div>
-  <div class="small">${reparationData.panneType || 'N/A'}</div>
+  <div class="small">${pannesTexte}</div>
   <div class="separator"></div>
 
   <!-- Finances -->

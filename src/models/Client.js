@@ -17,7 +17,8 @@ const clientSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Le téléphone est obligatoire'],
     trim: true,
-    unique: true
+    // ✅ Plus de unique: true
+    // On autorise plusieurs clients avec "00000000"
   },
   phone2: {
     type: String,
@@ -43,6 +44,11 @@ const clientSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  zone: {
+  type: String,
+  trim: true,
+  default: null
+},
   isActive: {
     type: Boolean,
     default: true
@@ -52,7 +58,7 @@ const clientSchema = new mongoose.Schema({
 });
 
 // ============================================================
-// ✅ Middleware pour générer le code client (inchangé)
+// ✅ Middleware pour générer le code client
 // ============================================================
 clientSchema.pre('validate', async function() {
   if (this.isNew && !this.code) {
@@ -69,7 +75,7 @@ clientSchema.pre('validate', async function() {
 });
 
 // ============================================================
-// ✅ Index pour la recherche textuelle (avec phone2)
+// ✅ Index pour la recherche textuelle
 // ============================================================
 clientSchema.index({
   nom: 'text',

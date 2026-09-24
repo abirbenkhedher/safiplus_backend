@@ -3,30 +3,17 @@ const Reparation = require('../models/Reparation');
 const logger = require('../config/logger');
 
 // ============================================================
-// ✅ Fonction utilitaire : Vérifier si un numéro existe déjà
-// Cherche dans phone ET phone2
+// ✅ CONSTANTE : numéro par défaut (client sans téléphone)
 // ============================================================
-const findClientByAnyPhone = async (phone1, phone2 = null, excludeId = null) => {
-  const phonesToCheck = [phone1, phone2].filter(p => p && p.trim() !== '');
+const DEFAULT_PHONE = '00000000';
 
-  if (phonesToCheck.length === 0) return null;
-
-  // Construire les conditions : phone OU phone2 doit matcher l'un des numéros
-  const orConditions = phonesToCheck.flatMap((p) => [
-    { phone: p.trim() },
-    { phone2: p.trim() },
-  ]);
-
-  const query = {
-    $or: orConditions,
-  };
-
-  // Si on modifie un client, exclure le client en cours de modification
-  if (excludeId) {
-    query._id = { $ne: excludeId };
-  }
-
-  return await Client.findOne(query);
+// ============================================================
+// ✅ Helper : vérifie si un numéro est le numéro par défaut
+// ============================================================
+const isDefaultPhone = (phone) => {
+  if (!phone) return false;
+  const cleaned = String(phone).replace(/[^0-9]/g, '');
+  return cleaned === DEFAULT_PHONE;
 };
 
 // ============================================================
@@ -136,36 +123,39 @@ exports.getOne = async (req, res) => {
 // ============================================================
 exports.create = async (req, res) => {
   try {
-    const { nom, phone, phone2, email, adresse } = req.body;
+const { nom, phone, phone2, email, adresse, zone } = req.body;
 
-    // ✅ Vérifier si phone OU phone2 existe déjà chez un autre client
-    const existing = await findClientByAnyPhone(phone, phone2);
-    if (existing) {
-      // Déterminer quel numéro pose problème pour un message précis
-      const existingPhones = [existing.phone, existing.phone2].filter(Boolean);
-      const conflictingPhone = existingPhones.find(
-        (p) => p === phone?.trim() || p === phone2?.trim()
-      );
+    if (!nom || !nom.trim()) {
+      return res.status(400).json({ success: false, message: 'Le nom est obligatoire' });
+    }
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ success: false, message: 'Le téléphone est obligatoire' });
+    }
 
-      return res.status(400).json({
-        success: false,
-        message: `Le numéro ${conflictingPhone} est déjà utilisé par le client "${existing.nom}" (${existing.code})`
-      });
+    // ✅ Ne PAS vérifier l'unicité si c'est le numéro par défaut
+    if (!isDefaultPhone(phone)) {
+      const existing = await Client.findOne({ phone: phone.trim() });
+      if (existing) {
+        return res.status(400).json({
+          success: false,
+          message: 'Un client avec ce téléphone existe déjà'
+        });
+      }
     }
 
     // Créer le client
     const clientData = {
-      nom,
-      phone,
-      adresse
+      nom: nom.trim(),
+      phone: phone.trim(),
+      adresse: adresse?.trim() || undefined,
+        zone: zone?.trim() || undefined,   // ✅ NOUVEAU
+
     };
 
-    // Ajouter phone2 uniquement s'il est fourni et non vide
     if (phone2 && phone2.trim() !== '') {
       clientData.phone2 = phone2.trim();
     }
 
-    // Ajouter l'email uniquement s'il est fourni et non vide
     if (email && email.trim() !== '') {
       clientData.email = email.trim();
     }
@@ -194,7 +184,7 @@ exports.create = async (req, res) => {
 // ============================================================
 exports.update = async (req, res) => {
   try {
-    const { nom, phone, phone2, email, adresse, isActive } = req.body;
+const { nom, phone, phone2, email, adresse, zone, isActive } = req.body;
     const client = await Client.findById(req.params.id);
 
     if (!client) {
@@ -204,33 +194,28 @@ exports.update = async (req, res) => {
       });
     }
 
-    // ✅ Vérifier si phone OU phone2 existe déjà chez un AUTRE client
-    // (on exclut le client en cours de modification)
-    const existing = await findClientByAnyPhone(phone, phone2, client._id);
-    if (existing) {
-      const existingPhones = [existing.phone, existing.phone2].filter(Boolean);
-      const conflictingPhone = existingPhones.find(
-        (p) => p === phone?.trim() || p === phone2?.trim()
-      );
-
-      return res.status(400).json({
-        success: false,
-        message: `Le numéro ${conflictingPhone} est déjà utilisé par le client "${existing.nom}" (${existing.code})`
-      });
+    // ✅ Vérifier l'unicité SEULEMENT si ce n'est PAS le numéro par défaut
+    if (phone && phone !== client.phone && !isDefaultPhone(phone)) {
+      const existing = await Client.findOne({ phone, _id: { $ne: client._id } });
+      if (existing) {
+        return res.status(400).json({
+          success: false,
+          message: 'Un client avec ce téléphone existe déjà'
+        });
+      }
     }
 
-    // ✅ Mise à jour des champs
     client.nom = nom || client.nom;
     client.phone = phone || client.phone;
     client.adresse = adresse !== undefined ? adresse : client.adresse;
+    client.zone = zone !== undefined ? zone : client.zone;   // ✅ NOUVEAU
+
     client.isActive = isActive !== undefined ? isActive : client.isActive;
 
-    // phone2 : si vide ou null, on le met à null
     if (phone2 !== undefined) {
       client.phone2 = phone2 && phone2.trim() !== '' ? phone2.trim() : null;
     }
 
-    // email : si vide ou null, on le met à null
     if (email !== undefined) {
       client.email = email && email.trim() !== '' ? email.trim() : null;
     }
@@ -269,6 +254,15 @@ exports.findByPhone = async (req, res) => {
 
     const cleanPhone = phone.replace(/[^0-9]/g, '');
 
+    // ✅ Ne PAS chercher si c'est le numéro par défaut
+    if (cleanPhone === DEFAULT_PHONE) {
+      return res.json({
+        success: true,
+        data: null,
+        exists: false
+      });
+    }
+
     if (cleanPhone.length < 6) {
       return res.status(400).json({
         success: false,
@@ -276,11 +270,12 @@ exports.findByPhone = async (req, res) => {
       });
     }
 
-    // ✅ Chercher dans phone ET phone2
     const clients = await Client.find({});
     const foundClient = clients.find(c => {
       const cPhone = (c.phone || '').replace(/[^0-9]/g, '');
       const cPhone2 = (c.phone2 || '').replace(/[^0-9]/g, '');
+      // ✅ Ignorer les clients avec le numéro par défaut
+      if (cPhone === DEFAULT_PHONE) return false;
       return (
         cPhone.includes(cleanPhone) || cleanPhone.includes(cPhone) ||
         (cPhone2 && (cPhone2.includes(cleanPhone) || cleanPhone.includes(cPhone2)))
@@ -347,4 +342,3 @@ exports.delete = async (req, res) => {
     });
   }
 };
-
