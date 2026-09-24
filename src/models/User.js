@@ -14,7 +14,9 @@ const AVAILABLE_MODULES = [
   'objets',
   'objets:read',
   'statuses',
-  'statuses:read',
+  'marques',    // ✅ Ajouter
+    'modeles',    // ✅ Ajoute
+    //   'statuses:read',
   'users',
   'history',
 ];

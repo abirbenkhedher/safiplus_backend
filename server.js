@@ -18,6 +18,9 @@ const dashboardRoutes = require('./src/routes/dashboardRoutes');
 const exportRoutes = require('./src/routes/exportRoutes');
 const historyRoutes = require('./src/routes/historyRoutes');
 const teamMessagesRouter = require('./src/routes/teamMessages');
+const marquesRoutes =  require('./src/routes/marquesRoutes');
+const modelesRoutes =  require('./src/routes/modelesRoutes');
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -54,6 +57,8 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/history', historyRoutes);
 app.use('/api/team-messages', teamMessagesRouter);
+app.use('/api/marques', marquesRoutes);
+app.use('/api/modeles', modelesRoutes);
 
 
 // Error handler

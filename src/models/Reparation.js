@@ -24,14 +24,15 @@ const reparationSchema = new mongoose.Schema({
     required: [true, 'L\'objet est obligatoire']
   },
   marque: {
-    type: String,
-    required: [true, 'La marque est obligatoire'],
-    trim: true
-  },
-  modele: {
-    type: String,
-    trim: true
-  },
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Marque',
+  required: [true, 'La marque est obligatoire']
+},
+modele: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Modele',
+  // Optionnel : required si vous voulez forcer
+},
  
   accessoires: {
     type: String,

@@ -68,6 +68,16 @@ const wrapText = (text, width) => {
 };
 
 /**
+ * ✅ Helper : extrait le nom d'un champ populé (objet ou string)
+ */
+const getNom = (field) => {
+  if (!field) return null;
+  if (typeof field === 'string') return field;
+  if (typeof field === 'object' && field.nom) return field.nom;
+  return null;
+};
+
+/**
  * Génère le contenu du ticket pour une réparation
  */
 const generateTicketContent = (reparation, options = {}) => {
@@ -108,8 +118,14 @@ const generateTicketContent = (reparation, options = {}) => {
     lines.push({ text: formatLine('Nom:', reparation.client.nom, width), size: 'small' });
     lines.push({ text: formatLine('Code:', reparation.client.code, width), size: 'small' });
     lines.push({ text: formatLine('Tél:', reparation.client.phone, width), size: 'small' });
+    if (reparation.client.phone2) {
+      lines.push({ text: formatLine('Tél 2:', reparation.client.phone2, width), size: 'small' });
+    }
     if (reparation.client.email) {
       lines.push({ text: formatLine('Email:', reparation.client.email, width), size: 'small' });
+    }
+    if (reparation.client.adresse) {
+      lines.push({ text: formatLine('Adresse:', reparation.client.adresse, width), size: 'small' });
     }
   }
 
@@ -124,11 +140,20 @@ const generateTicketContent = (reparation, options = {}) => {
   if (reparation.categorie) {
     lines.push({ text: formatLine('Catégorie:', reparation.categorie.nom, width), size: 'small' });
   }
-  lines.push({ text: formatLine('Marque:', reparation.marque || 'N/A', width), size: 'small' });
-  if (reparation.modele) {
-    lines.push({ text: formatLine('Modèle:', reparation.modele, width), size: 'small' });
+
+  // ✅ Marque : extraction du nom
+  const marqueNom = getNom(reparation.marque);
+  lines.push({
+    text: formatLine('Marque:', marqueNom || 'N/A', width),
+    size: 'small'
+  });
+
+  // ✅ Modèle : extraction du nom
+  const modeleNom = getNom(reparation.modele);
+  if (modeleNom) {
+    lines.push({ text: formatLine('Modèle:', modeleNom, width), size: 'small' });
   }
- 
+
   if (reparation.accessoires) {
     lines.push({ text: formatLine('Accessoires:', reparation.accessoires, width), size: 'small' });
   }
@@ -217,7 +242,7 @@ const generateTicketPDF = (reparation, options = {}) => {
       content.forEach(item => {
         const fontSize = TICKET_CONFIG.fontSizes[item.size] || TICKET_CONFIG.fontSizes.normal;
         doc.fontSize(fontSize);
-        
+
         if (item.bold) {
           doc.font('Helvetica-Bold');
         } else {
@@ -256,10 +281,10 @@ const generateTicketHTML = async (reparation, options = {}) => {
   // ============================================================
   // ✅ QR CODE : EXACTEMENT la même URL que la page détails
   // ============================================================
-  const frontendUrl = 
-    process.env.FRONTEND_URL ||        
-    process.env.CLIENT_URL ||          
-    'http://localhost:5173';           
+  const frontendUrl =
+    process.env.FRONTEND_URL ||
+    process.env.CLIENT_URL ||
+    'http://localhost:5173';
 
   const qrData = `${frontendUrl}/suivi/${reparationData.numero}`;
 
@@ -277,6 +302,10 @@ const generateTicketHTML = async (reparation, options = {}) => {
   } catch (err) {
     console.error('Erreur génération QR:', err);
   }
+
+  // ✅ Extraction des noms de marque et modèle
+  const marqueNom = getNom(reparationData.marque) || 'N/A';
+  const modeleNom = getNom(reparationData.modele);
 
   const html = `
 <!DOCTYPE html>
@@ -398,15 +427,17 @@ const generateTicketHTML = async (reparation, options = {}) => {
   <div class="row small"><span>Nom:</span><span>${reparationData.client?.nom || 'N/A'}</span></div>
   <div class="row small"><span>Code:</span><span>${reparationData.client?.code || 'N/A'}</span></div>
   <div class="row small"><span>Tél:</span><span>${reparationData.client?.phone || 'N/A'}</span></div>
+  ${reparationData.client?.phone2 ? `<div class="row small"><span>Tél 2:</span><span>${reparationData.client.phone2}</span></div>` : ''}
   ${reparationData.client?.email ? `<div class="row small"><span>Email:</span><span>${reparationData.client.email}</span></div>` : ''}
+  ${reparationData.client?.adresse ? `<div class="row small"><span>Adresse:</span><span>${reparationData.client.adresse}</span></div>` : ''}
   <div class="separator"></div>
 
   <!-- Appareil -->
   <div class="section-title">Appareil</div>
   ${reparationData.objet ? `<div class="row small"><span>Type:</span><span>${reparationData.objet.nom}</span></div>` : ''}
   ${reparationData.categorie ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>` : ''}
-  <div class="row small"><span>Marque:</span><span>${reparationData.marque || 'N/A'}</span></div>
-  ${reparationData.modele ? `<div class="row small"><span>Modèle:</span><span>${reparationData.modele}</span></div>` : ''}
+  <div class="row small"><span>Marque:</span><span>${marqueNom}</span></div>
+  ${modeleNom ? `<div class="row small"><span>Modèle:</span><span>${modeleNom}</span></div>` : ''}
   ${reparationData.accessoires ? `<div class="row small"><span>Accessoires:</span><span>${reparationData.accessoires}</span></div>` : ''}
   <div class="separator"></div>
 

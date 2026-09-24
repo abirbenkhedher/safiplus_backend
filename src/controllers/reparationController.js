@@ -22,7 +22,7 @@ exports.getAll = async (req, res) => {
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
 
-    // ✅ Filtre ADRESSE séparé
+    // ✅ Filtre ADRESSE
     if (adresse && adresse.trim() !== '') {
       const clientsWithAdresse = await Client.find({
         adresse: { $regex: adresse, $options: 'i' },
@@ -43,26 +43,41 @@ exports.getAll = async (req, res) => {
 
     // ✅ Recherche globale multi-champs
     if (search) {
-      const matchingClients = await Client.find({
-        $or: [
-          { nom: { $regex: search, $options: 'i' } },
-          { phone: { $regex: search, $options: 'i' } },
-          { phone2: { $regex: search, $options: 'i' } },
-          { code: { $regex: search, $options: 'i' } },
-          { adresse: { $regex: search, $options: 'i' } },
-        ],
-      }).select('_id');
+      // Rechercher aussi dans Marque et Modele (par nom)
+      const Marque = require('../models/Marque');
+      const Modele = require('../models/Modele');
+
+      const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
+        Client.find({
+          $or: [
+            { nom: { $regex: search, $options: 'i' } },
+            { phone: { $regex: search, $options: 'i' } },
+            { phone2: { $regex: search, $options: 'i' } },
+            { code: { $regex: search, $options: 'i' } },
+            { adresse: { $regex: search, $options: 'i' } },
+          ],
+        }).select('_id'),
+        Marque.find({
+          nom: { $regex: search, $options: 'i' },
+        }).select('_id'),
+        Modele.find({
+          nom: { $regex: search, $options: 'i' },
+        }).select('_id'),
+      ]);
 
       const clientIds = matchingClients.map((c) => c._id);
+      const marqueIds = matchingMarques.map((m) => m._id);
+      const modeleIds = matchingModeles.map((m) => m._id);
 
       query.$or = [
         { numero: { $regex: search, $options: 'i' } },
-        { marque: { $regex: search, $options: 'i' } },
-        { modele: { $regex: search, $options: 'i' } },
         { problemeDeclare: { $regex: search, $options: 'i' } },
         { panneType: { $regex: search, $options: 'i' } },
         { note: { $regex: search, $options: 'i' } },
+        { accessoires: { $regex: search, $options: 'i' } },
         ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
+        ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
+        ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
       ];
     }
 
@@ -80,11 +95,13 @@ exports.getAll = async (req, res) => {
 
     const [reparations, total] = await Promise.all([
       Reparation.find(query)
-        // ✅ phone2 et adresse ajoutés
         .populate('client', 'nom phone phone2 email code adresse')
         .populate('status', 'label color parDefault')
         .populate('categorie', 'nom')
         .populate('objet', 'nom')
+        // ✅ Marque et Modèle populés
+        .populate('marque', 'nom')
+        .populate('modele', 'nom')
         .populate('createdBy', 'username firstName lastName')
         .populate('representant', 'username firstName lastName')
         .populate('reparateur', 'username firstName lastName')
@@ -130,11 +147,13 @@ exports.getAll = async (req, res) => {
 exports.getOne = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      // ✅ phone2 et adresse ajoutés
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color parDefault')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      // ✅ Marque et Modèle populés
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
@@ -187,6 +206,9 @@ exports.getPublicByNumero = async (req, res) => {
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      // ✅ Marque et Modèle populés
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('reparateur', 'firstName lastName');
 
     if (!reparation) {
@@ -220,8 +242,9 @@ exports.getPublicByNumero = async (req, res) => {
         },
         objet: reparation.objet?.nom,
         categorie: reparation.categorie?.nom,
-        marque: reparation.marque,
-        modele: reparation.modele,
+        // ✅ Extraction des noms depuis les objets populés
+        marque: reparation.marque?.nom || null,
+        modele: reparation.modele?.nom || null,
         panneType: reparation.panneType,
         problemeDeclare: reparation.problemeDeclare,
         status: {
@@ -291,6 +314,24 @@ exports.create = async (req, res) => {
       });
     }
 
+    // ✅ Valider la marque si fournie
+    if (marque) {
+      const Marque = require('../models/Marque');
+      const marqueExists = await Marque.findById(marque);
+      if (!marqueExists) {
+        return res.status(400).json({ success: false, message: 'Marque non trouvée' });
+      }
+    }
+
+    // ✅ Valider le modèle si fourni
+    if (modele) {
+      const Modele = require('../models/Modele');
+      const modeleExists = await Modele.findById(modele);
+      if (!modeleExists) {
+        return res.status(400).json({ success: false, message: 'Modèle non trouvé' });
+      }
+    }
+
     const finalPrix = prix || 0;
     const finalAcompte = acompte || 0;
     let finalPaymentType = paymentType || 'unpaid';
@@ -302,7 +343,10 @@ exports.create = async (req, res) => {
     const cleanObservations = (observations || []).filter(o => o.text && o.text.trim() !== '');
 
     const reparation = new Reparation({
-      client, categorie, objet, marque, modele, accessoires,
+      client, categorie, objet,
+      marque: marque || null,      // ✅ ObjectId
+      modele: modele || null,      // ✅ ObjectId
+      accessoires,
       problemeDeclare, panneType, note, observation,
       observations: cleanObservations,
       diagnostic,
@@ -339,11 +383,12 @@ exports.create = async (req, res) => {
     await reparation.save();
 
     const populated = await Reparation.findById(reparation._id)
-      // ✅ phone2 et adresse ajoutés
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
@@ -406,6 +451,30 @@ exports.update = async (req, res) => {
       }
     }
 
+    // ✅ Valider la marque si fournie et changée
+    if (marque !== undefined && marque !== null && marque !== '') {
+      const currentMarqueId = reparation.marque ? reparation.marque.toString() : null;
+      if (marque !== currentMarqueId) {
+        const Marque = require('../models/Marque');
+        const marqueExists = await Marque.findById(marque);
+        if (!marqueExists) {
+          return res.status(400).json({ success: false, message: 'Marque non trouvée' });
+        }
+      }
+    }
+
+    // ✅ Valider le modèle si fourni et changé
+    if (modele !== undefined && modele !== null && modele !== '') {
+      const currentModeleId = reparation.modele ? reparation.modele.toString() : null;
+      if (modele !== currentModeleId) {
+        const Modele = require('../models/Modele');
+        const modeleExists = await Modele.findById(modele);
+        if (!modeleExists) {
+          return res.status(400).json({ success: false, message: 'Modèle non trouvé' });
+        }
+      }
+    }
+
     const oldValues = {
       categorie: reparation.categorie,
       objet: reparation.objet,
@@ -432,8 +501,9 @@ exports.update = async (req, res) => {
 
     reparation.categorie = categorie || reparation.categorie;
     reparation.objet = objet || reparation.objet;
-    reparation.marque = marque || reparation.marque;
-    reparation.modele = modele !== undefined ? modele : reparation.modele;
+    // ✅ Marque et Modèle : ObjectId ou null
+    reparation.marque = marque !== undefined ? (marque || null) : reparation.marque;
+    reparation.modele = modele !== undefined ? (modele || null) : reparation.modele;
     reparation.accessoires = accessoires !== undefined ? accessoires : reparation.accessoires;
     reparation.problemeDeclare = problemeDeclare !== undefined ? problemeDeclare : reparation.problemeDeclare;
     reparation.panneType = panneType !== undefined ? panneType : reparation.panneType;
@@ -564,6 +634,7 @@ exports.update = async (req, res) => {
       } else if (typeof oldVal === 'boolean' || typeof newVal === 'boolean') {
         changed = Boolean(oldVal) !== Boolean(newVal);
       } else {
+        // Pour les ObjectId (marque, modele), comparer avec toString()
         const oldStr = oldVal?.toString() || '';
         const newStr = newVal?.toString() || '';
         changed = oldStr !== newStr;
@@ -613,11 +684,12 @@ exports.update = async (req, res) => {
     }
 
     const populated = await Reparation.findById(reparation._id)
-      // ✅ phone2 et adresse ajoutés
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
@@ -822,11 +894,12 @@ exports.delete = async (req, res) => {
 exports.generatePDF = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      // ✅ phone2 et adresse ajoutés
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName');
@@ -860,11 +933,12 @@ exports.generatePDF = async (req, res) => {
 exports.getTicketHTML = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      // ✅ phone2 et adresse ajoutés
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName');
