@@ -12,7 +12,7 @@ exports.getAll = async (req, res) => {
   try {
     const {
       search, status, client, reparateur, createdBy,
-      dateDebut, dateFin, limit = 50, page = 1, sort = '-createdAt'
+      dateDebut, dateFin, adresse, limit = 50, page = 1, sort = '-createdAt'
     } = req.query;
 
     const query = { isDeleted: false };
@@ -22,27 +22,66 @@ exports.getAll = async (req, res) => {
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
 
+    // ✅ Filtre ADRESSE séparé
+    if (adresse && adresse.trim() !== '') {
+      const clientsWithAdresse = await Client.find({
+        adresse: { $regex: adresse, $options: 'i' },
+      }).select('_id');
+
+      const clientIds = clientsWithAdresse.map((c) => c._id);
+
+      if (clientIds.length > 0) {
+        query.client = { $in: clientIds };
+      } else {
+        return res.json({
+          success: true,
+          data: [],
+          pagination: { total: 0, page: 1, pages: 0 },
+        });
+      }
+    }
+
+    // ✅ Recherche globale multi-champs
     if (search) {
+      const matchingClients = await Client.find({
+        $or: [
+          { nom: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { phone2: { $regex: search, $options: 'i' } },
+          { code: { $regex: search, $options: 'i' } },
+          { adresse: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+
+      const clientIds = matchingClients.map((c) => c._id);
+
       query.$or = [
         { numero: { $regex: search, $options: 'i' } },
         { marque: { $regex: search, $options: 'i' } },
         { modele: { $regex: search, $options: 'i' } },
         { problemeDeclare: { $regex: search, $options: 'i' } },
-        { panneType: { $regex: search, $options: 'i' } }
+        { panneType: { $regex: search, $options: 'i' } },
+        { note: { $regex: search, $options: 'i' } },
+        ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
       ];
     }
 
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
-      if (dateFin) query.createdAt.$lte = new Date(dateFin);
+      if (dateFin) {
+        const endDate = new Date(dateFin);
+        endDate.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = endDate;
+      }
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [reparations, total] = await Promise.all([
       Reparation.find(query)
-        .populate('client', 'nom phone email code')
+        // ✅ phone2 et adresse ajoutés
+        .populate('client', 'nom phone phone2 email code adresse')
         .populate('status', 'label color parDefault')
         .populate('categorie', 'nom')
         .populate('objet', 'nom')
@@ -91,7 +130,8 @@ exports.getAll = async (req, res) => {
 exports.getOne = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone email code adresse')
+      // ✅ phone2 et adresse ajoutés
+      .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color parDefault')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -143,7 +183,7 @@ exports.getPublicByNumero = async (req, res) => {
     }
 
     const reparation = await Reparation.findOne({ numero, isDeleted: false })
-      .populate('client', 'nom')
+      .populate('client', 'nom phone phone2 adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -172,7 +212,12 @@ exports.getPublicByNumero = async (req, res) => {
       success: true,
       data: {
         numero: reparation.numero,
-        client: { nom: reparation.client?.nom || 'N/A' },
+        client: {
+          nom: reparation.client?.nom || 'N/A',
+          phone: reparation.client?.phone,
+          phone2: reparation.client?.phone2,
+          adresse: reparation.client?.adresse,
+        },
         objet: reparation.objet?.nom,
         categorie: reparation.categorie?.nom,
         marque: reparation.marque,
@@ -294,7 +339,8 @@ exports.create = async (req, res) => {
     await reparation.save();
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone email code')
+      // ✅ phone2 et adresse ajoutés
+      .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -343,7 +389,7 @@ exports.update = async (req, res) => {
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
       representant, reparateur, datePrevisionnelle, isReparable, isNotified,
-      envoyerSMS = false  // ✅ NOUVEAU
+      envoyerSMS = false
     } = req.body;
 
     if (panneType !== undefined && (!panneType || !panneType.trim())) {
@@ -410,7 +456,6 @@ exports.update = async (req, res) => {
     reparation.isReparable = isReparable !== undefined ? isReparable : reparation.isReparable;
     reparation.isNotified = isNotified !== undefined ? isNotified : reparation.isNotified;
 
-    // ✅ Mise à jour du diagnosticImprevus
     if (diagnosticImprevusData !== undefined) {
       const oldDiag = reparation.diagnosticImprevus || {};
       const newImprevus = (diagnosticImprevusData.imprevus || []).filter(i => i.description?.trim());
@@ -454,14 +499,12 @@ exports.update = async (req, res) => {
       };
     }
 
-    // ✅ Recalculer le paymentType
     const finalPrix = reparation.prix || 0;
     const finalAcompte = reparation.acompte || 0;
     if (finalAcompte >= finalPrix && finalPrix > 0) reparation.paymentType = 'paid';
     else if (finalAcompte > 0 && finalAcompte < finalPrix) reparation.paymentType = 'partial';
     else reparation.paymentType = 'unpaid';
 
-    // ✅ Date de livraison si statut = Livré
     if (status) {
       const newStatusDoc = await Status.findById(status);
       if (newStatusDoc && newStatusDoc.label === 'Livré') {
@@ -469,13 +512,10 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ============================================================
-    // ✅ TRAÇABILITÉ
-    // ============================================================
     const trackedFields = [
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
-       'accessoires', 'datePrevisionnelle',
+      'accessoires', 'datePrevisionnelle',
       'categorie', 'objet', 'observation',
       'diagnostic', 'diagnosticImprevus', 'travauxEffectues', 'piecesUtilisees',
       'isReparable', 'isNotified',
@@ -550,12 +590,11 @@ exports.update = async (req, res) => {
 
     await reparation.save();
 
-    // ✅ NOUVEAU : Envoi SMS si le statut a changé vers un statut cible ET si l'utilisateur l'a demandé
     if (envoyerSMS && status && status !== oldValues.status?.toString()) {
       const newStatusDoc = await Status.findById(status);
       if (newStatusDoc) {
         const repWithClient = await Reparation.findById(reparation._id)
-          .populate('client', 'nom phone email code');
+          .populate('client', 'nom phone phone2 email code');
 
         const smsResult = await smsService.sendStatusSMS(
           repWithClient,
@@ -574,7 +613,8 @@ exports.update = async (req, res) => {
     }
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone email code')
+      // ✅ phone2 et adresse ajoutés
+      .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -615,7 +655,7 @@ exports.changeStatus = async (req, res) => {
     const { status, comment, envoyerSMS = false } = req.body;
 
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone email code');
+      .populate('client', 'nom phone phone2 email code');
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -653,7 +693,6 @@ exports.changeStatus = async (req, res) => {
 
     await reparation.save();
 
-    // ✅ NOUVEAU : Envoi SMS si l'utilisateur l'a demandé
     if (envoyerSMS) {
       const smsResult = await smsService.sendStatusSMS(
         reparation,
@@ -783,7 +822,8 @@ exports.delete = async (req, res) => {
 exports.generatePDF = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone email code')
+      // ✅ phone2 et adresse ajoutés
+      .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -820,7 +860,8 @@ exports.generatePDF = async (req, res) => {
 exports.getTicketHTML = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone email code')
+      // ✅ phone2 et adresse ajoutés
+      .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')

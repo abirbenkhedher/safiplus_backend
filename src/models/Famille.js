@@ -7,7 +7,12 @@ const familleSchema = new mongoose.Schema({
     unique: true,
     trim: true,
     minlength: [2, 'Le nom doit contenir au moins 2 caractères']
-  }
+  },
+  ordre: {
+    type: Number,
+    default: 0,
+    min: [0, 'L\'ordre ne peut pas être négatif'],
+  },
 }, {
   timestamps: true
 });

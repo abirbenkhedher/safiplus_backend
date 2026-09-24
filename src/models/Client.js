@@ -19,6 +19,12 @@ const clientSchema = new mongoose.Schema({
     trim: true,
     unique: true
   },
+  phone2: {
+    type: String,
+    trim: true,
+    default: null,
+    sparse: true
+  },
   email: {
     type: String,
     trim: true,
@@ -27,9 +33,7 @@ const clientSchema = new mongoose.Schema({
     default: null,
     validate: {
       validator: function(value) {
-        // Si la valeur est null ou undefined ou vide, on ignore la validation
         if (!value) return true;
-        // Sinon, valider le format email
         return /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(value);
       },
       message: 'Email invalide'
@@ -47,7 +51,9 @@ const clientSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Middleware pour générer le code client
+// ============================================================
+// ✅ Middleware pour générer le code client (inchangé)
+// ============================================================
 clientSchema.pre('validate', async function() {
   if (this.isNew && !this.code) {
     try {
@@ -62,7 +68,15 @@ clientSchema.pre('validate', async function() {
   }
 });
 
-// Index pour la recherche textuelle
-clientSchema.index({ nom: 'text', phone: 'text', email: 'text', code: 'text' });
+// ============================================================
+// ✅ Index pour la recherche textuelle (avec phone2)
+// ============================================================
+clientSchema.index({
+  nom: 'text',
+  phone: 'text',
+  phone2: 'text',
+  email: 'text',
+  code: 'text'
+});
 
 module.exports = mongoose.model('Client', clientSchema);

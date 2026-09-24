@@ -2,7 +2,36 @@ const Client = require('../models/Client');
 const Reparation = require('../models/Reparation');
 const logger = require('../config/logger');
 
+// ============================================================
+// ✅ Fonction utilitaire : Vérifier si un numéro existe déjà
+// Cherche dans phone ET phone2
+// ============================================================
+const findClientByAnyPhone = async (phone1, phone2 = null, excludeId = null) => {
+  const phonesToCheck = [phone1, phone2].filter(p => p && p.trim() !== '');
+
+  if (phonesToCheck.length === 0) return null;
+
+  // Construire les conditions : phone OU phone2 doit matcher l'un des numéros
+  const orConditions = phonesToCheck.flatMap((p) => [
+    { phone: p.trim() },
+    { phone2: p.trim() },
+  ]);
+
+  const query = {
+    $or: orConditions,
+  };
+
+  // Si on modifie un client, exclure le client en cours de modification
+  if (excludeId) {
+    query._id = { $ne: excludeId };
+  }
+
+  return await Client.findOne(query);
+};
+
+// ============================================================
 // GET - Liste des clients avec recherche
+// ============================================================
 exports.getAll = async (req, res) => {
   try {
     const { search, isActive, limit = 100, page = 1 } = req.query;
@@ -59,7 +88,9 @@ exports.getAll = async (req, res) => {
   }
 };
 
+// ============================================================
 // GET - Un client par ID
+// ============================================================
 exports.getOne = async (req, res) => {
   try {
     const client = await Client.findById(req.params.id);
@@ -100,26 +131,39 @@ exports.getOne = async (req, res) => {
   }
 };
 
+// ============================================================
 // POST - Créer un client
+// ============================================================
 exports.create = async (req, res) => {
   try {
-    const { nom, phone, email, adresse } = req.body;
+    const { nom, phone, phone2, email, adresse } = req.body;
 
-    // Vérifier si le téléphone existe déjà
-    const existing = await Client.findOne({ phone });
+    // ✅ Vérifier si phone OU phone2 existe déjà chez un autre client
+    const existing = await findClientByAnyPhone(phone, phone2);
     if (existing) {
+      // Déterminer quel numéro pose problème pour un message précis
+      const existingPhones = [existing.phone, existing.phone2].filter(Boolean);
+      const conflictingPhone = existingPhones.find(
+        (p) => p === phone?.trim() || p === phone2?.trim()
+      );
+
       return res.status(400).json({
         success: false,
-        message: 'Un client avec ce téléphone existe déjà'
+        message: `Le numéro ${conflictingPhone} est déjà utilisé par le client "${existing.nom}" (${existing.code})`
       });
     }
 
-    // Créer le client avec validation de l'email seulement s'il est fourni
+    // Créer le client
     const clientData = {
       nom,
       phone,
       adresse
     };
+
+    // Ajouter phone2 uniquement s'il est fourni et non vide
+    if (phone2 && phone2.trim() !== '') {
+      clientData.phone2 = phone2.trim();
+    }
 
     // Ajouter l'email uniquement s'il est fourni et non vide
     if (email && email.trim() !== '') {
@@ -145,10 +189,12 @@ exports.create = async (req, res) => {
   }
 };
 
+// ============================================================
 // PUT - Modifier un client
+// ============================================================
 exports.update = async (req, res) => {
   try {
-    const { nom, phone, email, adresse, isActive } = req.body;
+    const { nom, phone, phone2, email, adresse, isActive } = req.body;
     const client = await Client.findById(req.params.id);
 
     if (!client) {
@@ -158,22 +204,33 @@ exports.update = async (req, res) => {
       });
     }
 
-    if (phone && phone !== client.phone) {
-      const existing = await Client.findOne({ phone, _id: { $ne: client._id } });
-      if (existing) {
-        return res.status(400).json({
-          success: false,
-          message: 'Un client avec ce téléphone existe déjà'
-        });
-      }
+    // ✅ Vérifier si phone OU phone2 existe déjà chez un AUTRE client
+    // (on exclut le client en cours de modification)
+    const existing = await findClientByAnyPhone(phone, phone2, client._id);
+    if (existing) {
+      const existingPhones = [existing.phone, existing.phone2].filter(Boolean);
+      const conflictingPhone = existingPhones.find(
+        (p) => p === phone?.trim() || p === phone2?.trim()
+      );
+
+      return res.status(400).json({
+        success: false,
+        message: `Le numéro ${conflictingPhone} est déjà utilisé par le client "${existing.nom}" (${existing.code})`
+      });
     }
 
+    // ✅ Mise à jour des champs
     client.nom = nom || client.nom;
     client.phone = phone || client.phone;
     client.adresse = adresse !== undefined ? adresse : client.adresse;
     client.isActive = isActive !== undefined ? isActive : client.isActive;
 
-    // Gérer l'email : si vide ou null, on le met à null
+    // phone2 : si vide ou null, on le met à null
+    if (phone2 !== undefined) {
+      client.phone2 = phone2 && phone2.trim() !== '' ? phone2.trim() : null;
+    }
+
+    // email : si vide ou null, on le met à null
     if (email !== undefined) {
       client.email = email && email.trim() !== '' ? email.trim() : null;
     }
@@ -196,8 +253,9 @@ exports.update = async (req, res) => {
   }
 };
 
-
+// ============================================================
 // GET - Rechercher un client par téléphone
+// ============================================================
 exports.findByPhone = async (req, res) => {
   try {
     const { phone } = req.query;
@@ -209,7 +267,6 @@ exports.findByPhone = async (req, res) => {
       });
     }
 
-    // Nettoyer le numéro (garder uniquement les chiffres)
     const cleanPhone = phone.replace(/[^0-9]/g, '');
 
     if (cleanPhone.length < 6) {
@@ -219,11 +276,15 @@ exports.findByPhone = async (req, res) => {
       });
     }
 
-    // Chercher un client dont le téléphone contient ces chiffres
+    // ✅ Chercher dans phone ET phone2
     const clients = await Client.find({});
     const foundClient = clients.find(c => {
       const cPhone = (c.phone || '').replace(/[^0-9]/g, '');
-      return cPhone.includes(cleanPhone) || cleanPhone.includes(cPhone);
+      const cPhone2 = (c.phone2 || '').replace(/[^0-9]/g, '');
+      return (
+        cPhone.includes(cleanPhone) || cleanPhone.includes(cPhone) ||
+        (cPhone2 && (cPhone2.includes(cleanPhone) || cleanPhone.includes(cPhone2)))
+      );
     });
 
     if (foundClient) {
@@ -248,7 +309,9 @@ exports.findByPhone = async (req, res) => {
   }
 };
 
+// ============================================================
 // DELETE - Supprimer un client
+// ============================================================
 exports.delete = async (req, res) => {
   try {
     const client = await Client.findById(req.params.id);
@@ -284,3 +347,4 @@ exports.delete = async (req, res) => {
     });
   }
 };
+

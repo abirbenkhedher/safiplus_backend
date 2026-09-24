@@ -1,10 +1,13 @@
 const Objet = require('../models/Objet');
 const logger = require('../config/logger');
 
+// ============================================================
 // GET - Liste des objets
+// ============================================================
 exports.getAll = async (req, res) => {
   try {
-    const objets = await Objet.find().sort({ nom: 1 });
+    // ✅ Tri par ordre croissant, puis par nom
+    const objets = await Objet.find().sort({ ordre: 1, nom: 1 });
     res.json({
       success: true,
       data: objets
@@ -18,7 +21,9 @@ exports.getAll = async (req, res) => {
   }
 };
 
+// ============================================================
 // GET - Un objet par ID
+// ============================================================
 exports.getOne = async (req, res) => {
   try {
     const objet = await Objet.findById(req.params.id);
@@ -41,13 +46,26 @@ exports.getOne = async (req, res) => {
   }
 };
 
+// ============================================================
 // POST - Créer un objet
+// ============================================================
 exports.create = async (req, res) => {
   try {
-    const { nom } = req.body;
+    const { nom, ordre } = req.body;
 
-    const existing = await Objet.findOne({ 
-      nom: { $regex: new RegExp(`^${nom}$`, 'i') }
+    // ✅ Validation du nom
+    if (!nom || !nom.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le nom est obligatoire'
+      });
+    }
+
+    const trimmedNom = nom.trim();
+    const escapedNom = trimmedNom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const existing = await Objet.findOne({
+      nom: { $regex: new RegExp(`^${escapedNom}$`, 'i') }
     });
 
     if (existing) {
@@ -57,10 +75,27 @@ exports.create = async (req, res) => {
       });
     }
 
-    const objet = new Objet({ nom });
+    // ✅ Validation de l'ordre
+    let finalOrdre = 0;
+    if (ordre !== undefined && ordre !== null && ordre !== '') {
+      const numOrdre = Number(ordre);
+      if (!Number.isFinite(numOrdre) || numOrdre < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'L\'ordre doit être un nombre positif'
+        });
+      }
+      finalOrdre = numOrdre;
+    }
+
+    const objet = new Objet({
+      nom: trimmedNom,
+      ordre: finalOrdre,
+    });
+
     await objet.save();
 
-    logger.info(`Objet créé: ${objet.nom} par ${req.user.username}`);
+    logger.info(`Objet créé: ${objet.nom} (ordre: ${objet.ordre}) par ${req.user.username}`);
 
     res.status(201).json({
       success: true,
@@ -69,6 +104,21 @@ exports.create = async (req, res) => {
     });
   } catch (error) {
     logger.error('Erreur create objet:', error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cet objet existe déjà'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de l\'objet'
@@ -76,10 +126,12 @@ exports.create = async (req, res) => {
   }
 };
 
+// ============================================================
 // PUT - Modifier un objet
+// ============================================================
 exports.update = async (req, res) => {
   try {
-    const { nom } = req.body;
+    const { nom, ordre } = req.body;
     const objet = await Objet.findById(req.params.id);
 
     if (!objet) {
@@ -89,23 +141,51 @@ exports.update = async (req, res) => {
       });
     }
 
-    if (nom && nom !== objet.nom) {
-      const existing = await Objet.findOne({ 
-        nom: { $regex: new RegExp(`^${nom}$`, 'i') },
-        _id: { $ne: objet._id }
-      });
-      if (existing) {
+    // ✅ Valider et trimmer le nom si fourni
+    if (nom !== undefined && nom !== null) {
+      const trimmedNom = String(nom).trim();
+
+      if (!trimmedNom) {
         return res.status(400).json({
           success: false,
-          message: 'Cet objet existe déjà'
+          message: 'Le nom ne peut pas être vide'
         });
+      }
+
+      if (trimmedNom !== objet.nom) {
+        const escapedNom = trimmedNom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        const existing = await Objet.findOne({
+          nom: { $regex: new RegExp(`^${escapedNom}$`, 'i') },
+          _id: { $ne: objet._id }
+        });
+
+        if (existing) {
+          return res.status(400).json({
+            success: false,
+            message: 'Cet objet existe déjà'
+          });
+        }
+
+        objet.nom = trimmedNom;
       }
     }
 
-    objet.nom = nom || objet.nom;
+    // ✅ Mettre à jour l'ordre (HORS de tout if, exécution toujours si fourni)
+    if (ordre !== undefined && ordre !== null && ordre !== '') {
+      const numOrdre = Number(ordre);
+      if (!Number.isFinite(numOrdre) || numOrdre < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'L\'ordre doit être un nombre positif'
+        });
+      }
+      objet.ordre = numOrdre;
+    }
+
     await objet.save();
 
-    logger.info(`Objet modifié: ${objet.nom} par ${req.user.username}`);
+    logger.info(`Objet modifié: ${objet.nom} (ordre: ${objet.ordre}) par ${req.user.username}`);
 
     res.json({
       success: true,
@@ -114,6 +194,21 @@ exports.update = async (req, res) => {
     });
   } catch (error) {
     logger.error('Erreur update objet:', error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cet objet existe déjà'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la modification de l\'objet'
@@ -121,7 +216,9 @@ exports.update = async (req, res) => {
   }
 };
 
+// ============================================================
 // DELETE - Supprimer un objet
+// ============================================================
 exports.delete = async (req, res) => {
   try {
     const objet = await Objet.findById(req.params.id);
@@ -136,7 +233,7 @@ exports.delete = async (req, res) => {
     // Vérifier si des réparations utilisent cet objet
     const Reparation = require('../models/Reparation');
     const reparationsCount = await Reparation.countDocuments({ objet: objet._id });
-    
+
     if (reparationsCount > 0) {
       return res.status(400).json({
         success: false,

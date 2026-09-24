@@ -11,7 +11,12 @@ const categorieSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Famille',
     required: [true, 'La famille est obligatoire']
-  }
+  },
+  ordre: {
+    type: Number,
+    default: 0,
+    min: [0, 'L\'ordre ne peut pas être négatif'],
+  },
 }, {
   timestamps: true
 });

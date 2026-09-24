@@ -2,19 +2,22 @@ const Categorie = require('../models/Categorie');
 const Famille = require('../models/Famille');
 const logger = require('../config/logger');
 
+// ============================================================
 // GET - Liste des catégories avec filtre famille
+// ============================================================
 exports.getAll = async (req, res) => {
   try {
     const { famille } = req.query;
     const filter = {};
-    
+
     if (famille) {
       filter.famille = famille;
     }
 
+    // ✅ Tri par ordre croissant, puis par nom
     const categories = await Categorie.find(filter)
       .populate('famille', 'nom')
-      .sort({ nom: 1 });
+      .sort({ ordre: 1, nom: 1 });
 
     res.json({
       success: true,
@@ -29,7 +32,9 @@ exports.getAll = async (req, res) => {
   }
 };
 
+// ============================================================
 // GET - Une catégorie par ID
+// ============================================================
 exports.getOne = async (req, res) => {
   try {
     const categorie = await Categorie.findById(req.params.id).populate('famille', 'nom');
@@ -52,10 +57,28 @@ exports.getOne = async (req, res) => {
   }
 };
 
+// ============================================================
 // POST - Créer une catégorie
+// ============================================================
 exports.create = async (req, res) => {
   try {
-    const { nom, famille } = req.body;
+    const { nom, famille, ordre } = req.body;
+
+    // ✅ Validation du nom
+    if (!nom || !nom.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le nom est obligatoire'
+      });
+    }
+
+    // ✅ Validation de la famille
+    if (!famille) {
+      return res.status(400).json({
+        success: false,
+        message: 'La famille est obligatoire'
+      });
+    }
 
     // Vérifier que la famille existe
     const familleExists = await Famille.findById(famille);
@@ -66,9 +89,12 @@ exports.create = async (req, res) => {
       });
     }
 
+    const trimmedNom = nom.trim();
+    const escapedNom = trimmedNom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
     // Vérifier si la catégorie existe déjà dans cette famille
-    const existing = await Categorie.findOne({ 
-      nom: { $regex: new RegExp(`^${nom}$`, 'i') },
+    const existing = await Categorie.findOne({
+      nom: { $regex: new RegExp(`^${escapedNom}$`, 'i') },
       famille
     });
 
@@ -79,12 +105,30 @@ exports.create = async (req, res) => {
       });
     }
 
-    const categorie = new Categorie({ nom, famille });
+    // ✅ Validation de l'ordre
+    let finalOrdre = 0;
+    if (ordre !== undefined && ordre !== null && ordre !== '') {
+      const numOrdre = Number(ordre);
+      if (!Number.isFinite(numOrdre) || numOrdre < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'L\'ordre doit être un nombre positif'
+        });
+      }
+      finalOrdre = numOrdre;
+    }
+
+    const categorie = new Categorie({
+      nom: trimmedNom,
+      famille,
+      ordre: finalOrdre,
+    });
+
     await categorie.save();
 
     const populated = await Categorie.findById(categorie._id).populate('famille', 'nom');
 
-    logger.info(`Catégorie créée: ${nom} dans famille ${familleExists.nom} par ${req.user.username}`);
+    logger.info(`Catégorie créée: ${trimmedNom} (ordre: ${finalOrdre}) dans famille ${familleExists.nom} par ${req.user.username}`);
 
     res.status(201).json({
       success: true,
@@ -93,6 +137,21 @@ exports.create = async (req, res) => {
     });
   } catch (error) {
     logger.error('Erreur create catégorie:', error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette catégorie existe déjà dans cette famille'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la catégorie'
@@ -100,10 +159,12 @@ exports.create = async (req, res) => {
   }
 };
 
+// ============================================================
 // PUT - Modifier une catégorie
+// ============================================================
 exports.update = async (req, res) => {
   try {
-    const { nom, famille } = req.body;
+    const { nom, famille, ordre } = req.body;
     const categorie = await Categorie.findById(req.params.id);
 
     if (!categorie) {
@@ -113,24 +174,53 @@ exports.update = async (req, res) => {
       });
     }
 
-    // Vérifier la nouvelle famille si elle change
-    if (famille && famille !== categorie.famille.toString()) {
-      const familleExists = await Famille.findById(famille);
-      if (!familleExists) {
+    // ✅ Vérifier la nouvelle famille si elle change
+    if (famille !== undefined && famille !== null) {
+      const currentFamilleId = categorie.famille
+        ? categorie.famille.toString()
+        : null;
+
+      if (famille !== currentFamilleId) {
+        const familleExists = await Famille.findById(famille);
+        if (!familleExists) {
+          return res.status(400).json({
+            success: false,
+            message: 'La famille spécifiée n\'existe pas'
+          });
+        }
+      }
+    }
+
+    // ✅ Valider et trimmer le nom si fourni
+    let trimmedNom = null;
+    if (nom !== undefined && nom !== null) {
+      trimmedNom = String(nom).trim();
+
+      if (!trimmedNom) {
         return res.status(400).json({
           success: false,
-          message: 'La famille spécifiée n\'existe pas'
+          message: 'Le nom ne peut pas être vide'
         });
       }
     }
 
-    // Vérifier les doublons
+    // ✅ Préparer les valeurs pour vérification doublons
     const checkFamille = famille || categorie.famille;
-    const checkNom = nom || categorie.nom;
+    const checkNom = trimmedNom || categorie.nom;
 
-    if (checkNom !== categorie.nom || checkFamille !== categorie.famille.toString()) {
-      const existing = await Categorie.findOne({ 
-        nom: { $regex: new RegExp(`^${checkNom}$`, 'i') },
+    const currentFamilleId = categorie.famille
+      ? categorie.famille.toString()
+      : null;
+
+    const nomChanged = checkNom !== categorie.nom;
+    const familleChanged = checkFamille && checkFamille.toString() !== currentFamilleId;
+
+    // ✅ Vérifier les doublons si nécessaire
+    if (nomChanged || familleChanged) {
+      const escapedNom = checkNom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      const existing = await Categorie.findOne({
+        nom: { $regex: new RegExp(`^${escapedNom}$`, 'i') },
         famille: checkFamille,
         _id: { $ne: categorie._id }
       });
@@ -143,13 +233,27 @@ exports.update = async (req, res) => {
       }
     }
 
-    categorie.nom = nom || categorie.nom;
-    categorie.famille = famille || categorie.famille;
+    // ✅ Appliquer les modifications
+    if (trimmedNom !== null) categorie.nom = trimmedNom;
+    if (famille !== undefined && famille !== null) categorie.famille = famille;
+
+    // ✅ Mettre à jour l'ordre (HORS de tout if, exécution toujours si fourni)
+    if (ordre !== undefined && ordre !== null && ordre !== '') {
+      const numOrdre = Number(ordre);
+      if (!Number.isFinite(numOrdre) || numOrdre < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'L\'ordre doit être un nombre positif'
+        });
+      }
+      categorie.ordre = numOrdre;
+    }
+
     await categorie.save();
 
     const populated = await Categorie.findById(categorie._id).populate('famille', 'nom');
 
-    logger.info(`Catégorie modifiée: ${categorie.nom} par ${req.user.username}`);
+    logger.info(`Catégorie modifiée: ${categorie.nom} (ordre: ${categorie.ordre}) par ${req.user.username}`);
 
     res.json({
       success: true,
@@ -158,6 +262,21 @@ exports.update = async (req, res) => {
     });
   } catch (error) {
     logger.error('Erreur update catégorie:', error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette catégorie existe déjà dans cette famille'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la modification de la catégorie'
@@ -165,7 +284,9 @@ exports.update = async (req, res) => {
   }
 };
 
+// ============================================================
 // DELETE - Supprimer une catégorie
+// ============================================================
 exports.delete = async (req, res) => {
   try {
     const categorie = await Categorie.findById(req.params.id);
@@ -180,7 +301,7 @@ exports.delete = async (req, res) => {
     // Vérifier si des réparations utilisent cette catégorie
     const Reparation = require('../models/Reparation');
     const reparationsCount = await Reparation.countDocuments({ categorie: categorie._id });
-    
+
     if (reparationsCount > 0) {
       return res.status(400).json({
         success: false,

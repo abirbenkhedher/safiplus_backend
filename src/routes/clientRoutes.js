@@ -4,7 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const clientController = require('../controllers/clientController');
 
-// ✅ Route de recherche par téléphone (avant /:id)
+// ✅ Route de recherche par téléphone/adresse (avant /:id)
 router.get('/search/phone', requireAuth, requirePermission('clients'), clientController.findByPhone);
 
 router.get('/', requireAuth, requirePermission('clients'), clientController.getAll);
