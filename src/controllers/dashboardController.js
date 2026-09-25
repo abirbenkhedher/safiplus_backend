@@ -23,7 +23,7 @@ exports.getStats = async (req, res) => {
       statusMap[s._id.toString()] = s;
     });
 
-    // ✅ Réparations par statut (calcul direct)
+    // ✅ Réparations par statut
     const statusCounts = await Reparation.aggregate([
       { $match: reparationFilter },
       { $group: { _id: '$status', count: { $sum: 1 } } }
@@ -51,7 +51,8 @@ exports.getStats = async (req, res) => {
       reparationsParCategorie,
       topObjets,
       topMarques,
-      activiteReparateurs
+      activiteReparateurs,
+      topZones   // ✅ NOUVEAU
     ] = await Promise.all([
       Client.countDocuments({ isActive: true }),
       Reparation.countDocuments(reparationFilter),
@@ -98,7 +99,9 @@ exports.getStats = async (req, res) => {
       Reparation.aggregate([
         { $match: reparationFilter },
         { $group: { _id: '$marque', count: { $sum: 1 } } },
-        { $project: { label: '$_id', count: 1 } },
+        { $lookup: { from: 'marques', localField: '_id', foreignField: '_id', as: 'marqueInfo' } },
+        { $unwind: { path: '$marqueInfo', preserveNullAndEmptyArrays: true } },
+        { $project: { label: '$marqueInfo.nom', count: 1 } },
         { $sort: { count: -1 } },
         { $limit: 5 }
       ]),
@@ -110,6 +113,27 @@ exports.getStats = async (req, res) => {
         { $project: { label: { $concat: ['$userInfo.firstName', ' ', '$userInfo.lastName'] }, count: 1 } },
         { $sort: { count: -1 } },
         { $limit: 5 }
+      ]),
+      // ✅ NOUVEAU : Top zones (par zone du client)
+      Reparation.aggregate([
+        { $match: { ...reparationFilter, client: { $ne: null } } },
+        {
+          $lookup: {
+            from: 'clients',
+            localField: 'client',
+            foreignField: '_id',
+            as: 'clientInfo'
+          }
+        },
+        { $unwind: { path: '$clientInfo', preserveNullAndEmptyArrays: false } },
+        {
+          $match: {
+            'clientInfo.zone': { $nin: [null, ''] }
+          }
+        },
+        { $group: { _id: '$clientInfo.zone', count: { $sum: 1 } } },
+        { $project: { label: '$_id', count: 1 } },
+        { $sort: { count: -1 } }
       ])
     ]);
 
@@ -188,6 +212,7 @@ exports.getStats = async (req, res) => {
         topObjets: cleanData(topObjets),
         topMarques: cleanData(topMarques),
         activiteReparateurs: cleanData(activiteReparateurs),
+        topZones: cleanData(topZones),   // ✅ NOUVEAU
         paymentsStats: paymentCounts,
       }
     });
