@@ -13,13 +13,14 @@ const smsService = require('../services/smsService');
 exports.getAll = async (req, res) => {
   try {
     const {
-      search, status, client, reparateur, createdBy,
+      search, status, categorie, client, reparateur, createdBy,
       dateDebut, dateFin, adresse, limit = 50, page = 1, sort = '-createdAt'
     } = req.query;
 
     const query = { isDeleted: false };
 
     if (status) query.status = status;
+    if (categorie) query.categorie = categorie;   // ✅ AJOUT
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
@@ -66,7 +67,7 @@ exports.getAll = async (req, res) => {
       query.$or = [
         { numero: { $regex: search, $options: 'i' } },
         { problemeDeclare: { $regex: search, $options: 'i' } },
-        { panneType: { $regex: search, $options: 'i' } },   // ✅ Recherche dans le tableau
+        { panneType: { $regex: search, $options: 'i' } },
         { note: { $regex: search, $options: 'i' } },
         ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
         ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
