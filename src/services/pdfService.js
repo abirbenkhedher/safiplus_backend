@@ -248,8 +248,11 @@ const generateTicketHTML = async (reparation, options = {}) => {
     boutiqueEmail = process.env.BOUTIQUE_EMAIL || '',
     footerMessage = 'Merci de votre confiance!',
     offsetTop = 5,
-    offsetLeft = 0.5,
-    offsetRight = 0.5,
+    offsetLeft = 0,
+    offsetRight = 0,
+    ticketWidth = 74,        // ✅ Largeur du contenu (centré dans 80mm)
+    paperWidth = 80,         // ✅ Largeur du papier (80mm standard)
+    fontSize = 10,
   } = options;
 
   const reparationData = reparation.toObject ? reparation.toObject() : reparation;
@@ -260,8 +263,6 @@ const generateTicketHTML = async (reparation, options = {}) => {
     'http://localhost:5173';
 
   const qrData = `${frontendUrl}/suivi/${reparationData.numero}`;
-
-  console.log('🎫 QR Code ticket généré:', qrData);
 
   let qrCodeDataUrl = '';
   try {
@@ -275,14 +276,11 @@ const generateTicketHTML = async (reparation, options = {}) => {
     console.error('Erreur génération QR:', err);
   }
 
-  // ✅ Logo
   const logoDataUrl = getLogoDataUrl();
-
   const marqueNom = getNom(reparationData.marque) || 'N/A';
   const modeleNom = getNom(reparationData.modele);
   const pannesTexte = formatPannes(reparationData.panneType);
 
-  // ✅ Nom du créateur
   const createurNom = reparationData.createdBy
     ? `${reparationData.createdBy.firstName || ''} ${reparationData.createdBy.lastName || ''}`.trim() ||
       reparationData.createdBy.username ||
@@ -297,7 +295,7 @@ const generateTicketHTML = async (reparation, options = {}) => {
   <title>Reçu ${reparationData.numero}</title>
   <style>
     @page {
-      size: 80mm auto;
+      size: ${paperWidth}mm auto;
       margin: 0;
     }
 
@@ -310,28 +308,32 @@ const generateTicketHTML = async (reparation, options = {}) => {
     html, body {
       margin: 0;
       padding: 0;
-      width: 80mm;
+      width: ${paperWidth}mm;
       background: white;
       color: black;
     }
 
-    body {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 11px;
-      line-height: 1.2;
+    /* ✅ WRAPPER CENTRÉ */
+    .ticket-wrapper {
+      width: ${ticketWidth}mm;
+      margin: 0 auto;              /* ✅ centrage horizontal automatique */
       padding-top: ${offsetTop}mm;
       padding-left: ${offsetLeft}mm;
       padding-right: ${offsetRight}mm;
       padding-bottom: 5mm;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: ${fontSize}px;
+      line-height: 1.2;
+      box-sizing: border-box;
     }
 
     .center { text-align: center; }
     .bold { font-weight: bold; }
-    .large { font-size: 14px; }
-    .medium { font-size: 12px; }
-    .small { font-size: 10px; }
-    .xsmall { font-size: 9px; }
-    .tiny { font-size: 8px; }
+    .large { font-size: ${fontSize + 2}px; }
+    .medium { font-size: ${fontSize + 1}px; }
+    .small { font-size: ${fontSize - 1}px; }
+    .xsmall { font-size: ${fontSize - 2}px; }
+    .tiny { font-size: ${fontSize - 3}px; }
 
     .separator {
       border-top: 1px dashed #000;
@@ -347,6 +349,18 @@ const generateTicketHTML = async (reparation, options = {}) => {
       display: flex;
       justify-content: space-between;
       margin: 2px 0;
+      gap: 4px;
+    }
+
+    .row span:first-child {
+      flex-shrink: 0;
+    }
+
+    .row span:last-child {
+      text-align: right;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .section-title {
@@ -355,24 +369,24 @@ const generateTicketHTML = async (reparation, options = {}) => {
       text-transform: uppercase;
     }
 
-    /* ✅ En-tête avec logo + infos */
     .header-logo-block {
       display: flex;
       align-items: center;
-      gap: 10px;
+      justify-content: center;      /* ✅ centré */
+      gap: 8px;
       margin-bottom: 6px;
       padding-bottom: 4px;
     }
 
     .header-logo-block img {
-      width: 55px;
-      height: 55px;
+      width: 50px;
+      height: 50px;
       object-fit: contain;
       flex-shrink: 0;
     }
 
     .header-infos {
-      flex: 1;
+      flex: 0 1 auto;               /* ✅ ne pas prendre tout l'espace */
       min-width: 0;
       display: flex;
       flex-direction: column;
@@ -381,7 +395,7 @@ const generateTicketHTML = async (reparation, options = {}) => {
     }
 
     .header-infos .info-line {
-      font-size: 9.5px;
+      font-size: ${fontSize - 1}px;
       line-height: 1.15;
       white-space: nowrap;
       overflow: hidden;
@@ -396,14 +410,6 @@ const generateTicketHTML = async (reparation, options = {}) => {
       font-weight: bold;
     }
 
-    .status-box {
-      border: 2px solid #000;
-      padding: 3px;
-      text-align: center;
-      font-weight: bold;
-      margin: 5px 0;
-    }
-
     .qr-code {
       text-align: center;
       margin: 8px 0;
@@ -411,24 +417,23 @@ const generateTicketHTML = async (reparation, options = {}) => {
     }
 
     .qr-code img {
-      width: 100px;
-      height: 100px;
+      width: 90px;
+      height: 90px;
     }
 
     .qr-code-url {
-      font-size: 7px;
+      font-size: ${fontSize - 3}px;
       color: #666;
       margin-top: 2px;
       word-break: break-all;
       line-height: 1.1;
     }
 
-    /* ✅ Bloc phrase arabe */
     .arabic-block {
       direction: rtl;
       text-align: right;
       font-family: 'Arial', 'Tahoma', sans-serif;
-      font-size: 11px;
+      font-size: ${fontSize}px;
       line-height: 1.5;
       margin: 6px 0;
       padding: 4px 2px;
@@ -440,45 +445,51 @@ const generateTicketHTML = async (reparation, options = {}) => {
       margin-bottom: 3px;
     }
 
-    /* ✅ Bloc infos boutique */
     .shop-info {
       text-align: center;
-      font-size: 10px;
+      font-size: ${fontSize - 1}px;
       line-height: 1.4;
       margin-top: 8px;
       font-weight: bold;
     }
 
     .shop-info .shop-name {
-      font-size: 11px;
+      font-size: ${fontSize}px;
       margin-bottom: 2px;
     }
 
     .shop-info .shop-address {
-      font-size: 9.5px;
+      font-size: ${fontSize - 1}px;
       font-weight: normal;
       margin-bottom: 3px;
     }
 
     .shop-info .shop-phones {
-      font-size: 9px;
+      font-size: ${fontSize - 2}px;
       font-weight: normal;
       line-height: 1.3;
     }
 
+    /* ✅ IMPRESSION */
     @media print {
       @page {
-        size: 80mm auto;
+        size: ${paperWidth}mm auto;
         margin: 0;
       }
 
       html, body {
-        width: 80mm;
+        width: ${paperWidth}mm;
         margin: 0;
         padding: 0;
+      }
+
+      .ticket-wrapper {
+        width: ${ticketWidth}mm;
+        margin: 0 auto;              /* ✅ centrage conservé */
         padding-top: ${offsetTop}mm;
         padding-left: ${offsetLeft}mm;
         padding-right: ${offsetRight}mm;
+        padding-bottom: 5mm;
       }
 
       body {
@@ -493,93 +504,96 @@ const generateTicketHTML = async (reparation, options = {}) => {
   </style>
 </head>
 <body>
+  <div class="ticket-wrapper">
 
-  <!-- ✅ EN-TÊTE : Logo + N° + Date + Créé par -->
-  <div class="header-logo-block">
-    ${
-      logoDataUrl
-        ? `<img src="${logoDataUrl}" alt="Logo" />`
-        : ''
-    }
-    <div class="header-infos">
-      <div class="info-line">
-        <span class="label">N° :</span>
-        <span class="value">${reparationData.numero || 'N/A'}</span>
-      </div>
-      <div class="info-line">
-        <span class="label">Créé le :</span>
-        <span class="value">${new Date(reparationData.createdAt).toLocaleDateString('fr-FR')}</span>
-      </div>
-      <div class="info-line">
-        <span class="label">Créé par :</span>
-        <span class="value">${createurNom}</span>
+    <!-- EN-TÊTE : Logo + N° + Date + Créé par (centré) -->
+    <div class="header-logo-block">
+      ${logoDataUrl ? `<img src="${logoDataUrl}" alt="Logo" />` : ''}
+      <div class="header-infos">
+        <div class="info-line">
+          <span class="label">N° :</span>
+          <span class="value">${reparationData.numero || 'N/A'}</span>
+        </div>
+        <div class="info-line">
+          <span class="label">Créé le :</span>
+          <span class="value">${new Date(reparationData.createdAt).toLocaleDateString('fr-FR')}</span>
+        </div>
+        <div class="info-line">
+          <span class="label">Créé par :</span>
+          <span class="value">${createurNom}</span>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="double-separator"></div>
+    <div class="double-separator"></div>
 
-  <!-- ✅ CLIENT (sans email) -->
-  <div class="section-title">Client</div>
-  <div class="row small"><span>Nom:</span><span>${reparationData.client?.nom || 'N/A'}</span></div>
-  <div class="row small"><span>Code:</span><span>${reparationData.client?.code || 'N/A'}</span></div>
-  <div class="row small"><span>Tél:</span><span>${reparationData.client?.phone || 'N/A'}</span></div>
-  <div class="separator"></div>
+    <!-- CLIENT -->
+    <div class="section-title">Client</div>
+    <div class="row small"><span>Nom:</span><span>${reparationData.client?.nom || 'N/A'}</span></div>
+    <div class="row small"><span>Code:</span><span>${reparationData.client?.code || 'N/A'}</span></div>
+    <div class="row small"><span>Tél:</span><span>${reparationData.client?.phone || 'N/A'}</span></div>
+    ${reparationData.client?.phone2 ? `<div class="row small"><span>Tél 2:</span><span>${reparationData.client.phone2}</span></div>` : ''}
+    ${reparationData.client?.adresse ? `<div class="row small"><span>Adresse:</span><span>${reparationData.client.adresse}</span></div>` : ''}
+    <div class="separator"></div>
 
-  <!-- ✅ APPAREIL -->
-  <div class="section-title">Appareil</div>
-  ${reparationData.objet ? `<div class="row small"><span>Type:</span><span>${reparationData.objet.nom}</span></div>` : ''}
-  ${reparationData.categorie ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>` : ''}
-  <div class="row small"><span>Marque:</span><span>${marqueNom}</span></div>
-  <div class="separator"></div>
+    <!-- APPAREIL -->
+    <div class="section-title">Appareil</div>
+    ${reparationData.objet ? `<div class="row small"><span>Type:</span><span>${reparationData.objet.nom}</span></div>` : ''}
+    ${reparationData.categorie ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>` : ''}
+    <div class="row small"><span>Marque:</span><span>${marqueNom}</span></div>
+    ${modeleNom ? `<div class="row small"><span>Modèle:</span><span>${modeleNom}</span></div>` : ''}
+    <div class="separator"></div>
 
-  <!-- ✅ TYPE DE PANNE -->
-  <div class="section-title">Type de panne</div>
-  <div class="small">${pannesTexte}</div>
-  <div class="separator"></div>
+    <!-- PANNE -->
+    <div class="section-title">Type de panne</div>
+    <div class="small">${pannesTexte}</div>
+    <div class="separator"></div>
 
-  <!-- ✅ FINANCES -->
-  <div class="section-title">Finances</div>
-  <div class="row small"><span>Prix total:</span><span>${(reparationData.prix || 0).toFixed(2)} DT</span></div>
-  <div class="row small"><span>Acompte:</span><span>${(reparationData.acompte || 0).toFixed(2)} DT</span></div>
-  <div class="row bold"><span>Reste à payer:</span><span>${((reparationData.prix || 0) - (reparationData.acompte || 0)).toFixed(2)} DT</span></div>
+    <!-- FINANCES -->
+    <div class="section-title">Finances</div>
+    <div class="row small"><span>Prix total:</span><span>${(reparationData.prix || 0).toFixed(2)} DT</span></div>
+    <div class="row small"><span>Acompte:</span><span>${(reparationData.acompte || 0).toFixed(2)} DT</span></div>
+    <div class="row bold"><span>Reste à payer:</span><span>${((reparationData.prix || 0) - (reparationData.acompte || 0)).toFixed(2)} DT</span></div>
 
-  ${reparationData.observation ? `
-  <div class="separator"></div>
-  <div class="section-title">Observation</div>
-  <div class="small">${reparationData.observation}</div>
-  ` : ''}
+    ${reparationData.observation ? `
+    <div class="separator"></div>
+    <div class="section-title">Observation</div>
+    <div class="small">${reparationData.observation}</div>
+    ` : ''}
 
-  <!-- ✅ QR CODE -->
-  ${qrCodeDataUrl ? `
-  <div class="separator"></div>
-  <div class="qr-code">
-    <img src="${qrCodeDataUrl}" alt="QR Code" />
-    <div class="small">📱 Scannez pour suivre votre réparation</div>
-    <div class="qr-code-url">${qrData}</div>
-  </div>
-  ` : ''}
-
-  <!-- ✅ PHRASE ARABE -->
-  <div class="arabic-block">
-    <div class="line">يجب الاستظهار بهذا الوصل لاستلام الهاتف أو الحاسوب.</div>
-    <div class="line">المحل لا يتحمّل مسؤولية الهاتف أو الحاسوب بعد مرور 3 أشهر من تاريخ الاستلام.</div>
-  </div>
-
-  <!-- ✅ INFOS BOUTIQUE -->
-  <div class="shop-info">
-    <div class="shop-name">${boutiqueName}</div>
-    <div class="shop-address">Avenue Habib Bourguiba - Haouaria 8045</div>
-      <div class="separator"></div>
-
-    <div class="shop-phones">
-      GSM Technique Haouaria : 20 417 056<br/>
-      GSM Technique Saheb Jebel : 95 832 935
+    <!-- QR CODE -->
+    ${qrCodeDataUrl ? `
+    <div class="separator"></div>
+    <div class="qr-code">
+      <img src="${qrCodeDataUrl}" alt="QR Code" />
+      <div class="small">📱 Scannez pour suivre votre réparation</div>
+      <div class="qr-code-url">${qrData}</div>
     </div>
+    ` : ''}
+
+    <!-- PHRASE ARABE -->
+    <div class="arabic-block">
+      <div class="line">يجب الاستظهار بهذا الوصل لاستلام الهاتف أو الحاسوب.</div>
+      <div class="line">المحل لا يتحمّل مسؤولية الهاتف أو الحاسوب بعد مرور 3 أشهر من تاريخ الاستلام.</div>
+    </div>
+
+    <!-- INFOS BOUTIQUE -->
+    <div class="shop-info">
+      <div class="shop-name">${boutiqueName}</div>
+      <div class="shop-address">Avenue Habib Bourguiba - Haouaria 8045</div>
+      <div class="shop-phones">
+        GSM Technique Haouaria : 20 417 056<br/>
+        GSM Technique Saheb Jebel : 95 832 935
+      </div>
+    </div>
+
+    <div class="double-separator"></div>
+
+    <div class="center small">${footerMessage}</div>
+    <div class="center small">Conservez ce reçu</div>
+    <div class="center tiny">Imprimé le ${new Date().toLocaleString('fr-FR')}</div>
+
   </div>
-
-
-
 </body>
 </html>
   `;
