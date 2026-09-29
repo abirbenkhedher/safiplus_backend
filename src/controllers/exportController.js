@@ -5,57 +5,89 @@ const History = require('../models/History');
 const excelService = require('../services/excelService');
 const logger = require('../config/logger');
 
-// GET - Export Excel des réparations
+// ============================================================
+// GET - Export Excel des réparations (filtres serveur)
+// ============================================================
 exports.exportReparations = async (req, res) => {
   try {
     const {
       search,
       status,
+      categorie,
       client,
       reparateur,
       createdBy,
       dateDebut,
-      dateFin
+      dateFin,
+      zone,
     } = req.query;
 
     const query = { isDeleted: false };
 
     if (status) query.status = status;
+    if (categorie) query.categorie = categorie;
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
 
+    // ✅ Filtre zone
+    if (zone && zone.trim() !== '') {
+      const clientsWithZone = await Client.find({
+        zone: { $regex: `^${zone}$`, $options: 'i' },
+      }).select('_id');
+
+      const clientIds = clientsWithZone.map((c) => c._id);
+
+      if (clientIds.length > 0) {
+        query.client = { $in: clientIds };
+      } else {
+        // Aucun client → aucun résultat
+        return res.json({
+          success: true,
+          data: [],
+          pagination: { total: 0, page: 1, pages: 0 },
+        });
+      }
+    }
+
     if (search) {
       query.$or = [
         { numero: { $regex: search, $options: 'i' } },
-        { marque: { $regex: search, $options: 'i' } },
-        { modele: { $regex: search, $options: 'i' } },
-        { problemeDeclare: { $regex: search, $options: 'i' } }
+        { problemeDeclare: { $regex: search, $options: 'i' } },
+        { panneType: { $regex: search, $options: 'i' } },
       ];
     }
 
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
-      if (dateFin) query.createdAt.$lte = new Date(dateFin);
+      if (dateFin) {
+        const endDate = new Date(dateFin);
+        endDate.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = endDate;
+      }
     }
 
     const reparations = await Reparation.find(query)
-      .populate('client', 'nom phone email code')
+      .populate('client', 'nom phone phone2 email code adresse zone')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
       .sort({ createdAt: -1 });
 
     const filters = {
-      'Recherche': search,
-      'Statut': status,
-      'Client': client,
-      'Réparateur': reparateur,
-      'Date début': dateDebut,
-      'Date fin': dateFin
+      search,
+      status,
+      categorie,
+      client,
+      reparateur,
+      zone,
+      dateDebut,
+      dateFin,
     };
 
     const workbook = await excelService.exportReparations(reparations, filters);
@@ -63,17 +95,55 @@ exports.exportReparations = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(`Export Excel réparations: ${reparations.length} lignes par ${req.user.username}`);
+    logger.info(
+      `Export Excel réparations: ${reparations.length} lignes par ${req.user.username}`
+    );
   } catch (error) {
     logger.error('Erreur exportReparations:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'export Excel'
+      message: "Erreur lors de l'export Excel",
     });
   }
 };
 
-// GET - Export Excel des clients
+// ============================================================
+// ✅ POST - Export Excel des réparations (données filtrées client)
+// ============================================================
+exports.exportReparationsPost = async (req, res) => {
+  try {
+    const { reparations, filters } = req.body;
+
+    if (!Array.isArray(reparations)) {
+      return res.status(400).json({
+        success: false,
+        message: 'La liste des réparations est requise',
+      });
+    }
+
+    const workbook = await excelService.exportReparations(
+      reparations,
+      filters || {}
+    );
+    const filename = `reparations_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    await excelService.sendWorkbook(res, workbook, filename);
+
+    logger.info(
+      `Export Excel réparations (POST): ${reparations.length} lignes par ${req.user.username}`
+    );
+  } catch (error) {
+    logger.error('Erreur exportReparationsPost:', error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur lors de l'export Excel",
+    });
+  }
+};
+
+// ============================================================
+// GET - Export Excel des clients (filtres serveur)
+// ============================================================
 exports.exportClients = async (req, res) => {
   try {
     const { search, isActive } = req.query;
@@ -89,73 +159,155 @@ exports.exportClients = async (req, res) => {
 
     const clients = await Client.find(query).sort({ createdAt: -1 });
 
-    // Ajouter les statistiques
-    const clientsWithStats = await Promise.all(clients.map(async (client) => {
-      const reparations = await Reparation.find({ client: client._id, isDeleted: false });
-      const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
-      const totalRestant = reparations.reduce((sum, r) => sum + (r.prix - r.acompte), 0);
+    const clientsWithStats = await Promise.all(
+      clients.map(async (client) => {
+        const reparations = await Reparation.find({
+          client: client._id,
+          isDeleted: false,
+        });
+        const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
+        const totalRestant = reparations.reduce(
+          (sum, r) => sum + (r.prix - r.acompte),
+          0
+        );
 
-      return {
-        ...client.toObject(),
-        totalReparations: reparations.length,
-        totalPaye,
-        totalRestant
-      };
-    }));
+        return {
+          ...client.toObject(),
+          totalReparations: reparations.length,
+          totalPaye,
+          totalRestant,
+        };
+      })
+    );
 
     const workbook = await excelService.exportClients(clientsWithStats);
     const filename = `clients_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(`Export Excel clients: ${clients.length} lignes par ${req.user.username}`);
+    logger.info(
+      `Export Excel clients: ${clients.length} lignes par ${req.user.username}`
+    );
   } catch (error) {
     logger.error('Erreur exportClients:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'export Excel'
+      message: "Erreur lors de l'export Excel",
     });
   }
 };
 
+// ============================================================
+// ✅ POST - Export Excel des clients (données filtrées client)
+// ============================================================
+exports.exportClientsPost = async (req, res) => {
+  try {
+    const { clients, filters } = req.body;
+
+    if (!Array.isArray(clients)) {
+      return res.status(400).json({
+        success: false,
+        message: 'La liste des clients est requise',
+      });
+    }
+
+    // ✅ Enrichir avec les stats (totalReparations, totalPaye, totalRestant)
+    //    si non fournies par le client frontend
+    const clientsWithStats = await Promise.all(
+      clients.map(async (client) => {
+        // Si le client a déjà les stats → les garder
+        if (
+          client.totalReparations !== undefined &&
+          client.totalPaye !== undefined &&
+          client.totalRestant !== undefined
+        ) {
+          return client;
+        }
+
+        // Sinon, les calculer
+        const clientId = client._id || client.id;
+        const reparations = await Reparation.find({
+          client: clientId,
+          isDeleted: false,
+        });
+        const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
+        const totalRestant = reparations.reduce(
+          (sum, r) => sum + (r.prix - r.acompte),
+          0
+        );
+
+        return {
+          ...client,
+          totalReparations: reparations.length,
+          totalPaye,
+          totalRestant,
+        };
+      })
+    );
+
+    const workbook = await excelService.exportClients(
+      clientsWithStats,
+      filters || {}
+    );
+    const filename = `clients_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    await excelService.sendWorkbook(res, workbook, filename);
+
+    logger.info(
+      `Export Excel clients (POST): ${clients.length} lignes par ${req.user.username}`
+    );
+  } catch (error) {
+    logger.error('Erreur exportClientsPost:', error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur lors de l'export Excel",
+    });
+  }
+};
+
+// ============================================================
 // GET - Export Excel des utilisateurs
+// ============================================================
 exports.exportUsers = async (req, res) => {
   try {
     const users = await User.find()
       .select('-password -refreshToken')
       .sort({ createdAt: -1 });
 
-    const usersWithStats = await Promise.all(users.map(async (user) => {
-      const reparationsCount = await Reparation.countDocuments({
-        $or: [
-          { reparateur: user._id },
-          { createdBy: user._id }
-        ],
-        isDeleted: false
-      });
+    const usersWithStats = await Promise.all(
+      users.map(async (user) => {
+        const reparationsCount = await Reparation.countDocuments({
+          $or: [{ reparateur: user._id }, { createdBy: user._id }],
+          isDeleted: false,
+        });
 
-      return {
-        ...user.toObject(),
-        reparationsCount
-      };
-    }));
+        return {
+          ...user.toObject(),
+          reparationsCount,
+        };
+      })
+    );
 
     const workbook = await excelService.exportUsers(usersWithStats);
     const filename = `utilisateurs_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(`Export Excel utilisateurs: ${users.length} lignes par ${req.user.username}`);
+    logger.info(
+      `Export Excel utilisateurs: ${users.length} lignes par ${req.user.username}`
+    );
   } catch (error) {
     logger.error('Erreur exportUsers:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'export Excel'
+      message: "Erreur lors de l'export Excel",
     });
   }
 };
 
+// ============================================================
 // GET - Export Excel de l'historique
+// ============================================================
 exports.exportHistory = async (req, res) => {
   try {
     const { entityType, action, dateDebut, dateFin } = req.query;
@@ -182,12 +334,14 @@ exports.exportHistory = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(`Export Excel historique: ${history.length} lignes par ${req.user.username}`);
+    logger.info(
+      `Export Excel historique: ${history.length} lignes par ${req.user.username}`
+    );
   } catch (error) {
     logger.error('Erreur exportHistory:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'export Excel'
+      message: "Erreur lors de l'export Excel",
     });
   }
 };

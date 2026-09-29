@@ -2,34 +2,38 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const logger = require('../config/logger');
 
+// ============================================================
 // Middleware d'authentification
+// ============================================================
 const requireAuth = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
-    
+
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Accès non autorisé. Token manquant.'
+        message: 'Accès non autorisé. Token manquant.',
       });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
+
     // ✅ Récupérer l'utilisateur complet avec permissions
-    const user = await User.findById(decoded.id).select('-password -refreshToken');
-    
+    const user = await User.findById(decoded.id).select(
+      '-password -refreshToken'
+    );
+
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Utilisateur non trouvé.'
+        message: 'Utilisateur non trouvé.',
       });
     }
 
     if (!user.isActive) {
       return res.status(403).json({
         success: false,
-        message: 'Compte désactivé.'
+        message: 'Compte désactivé.',
       });
     }
 
@@ -44,65 +48,77 @@ const requireAuth = async (req, res, next) => {
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
-        message: 'Token invalide.'
+        message: 'Token invalide.',
       });
     }
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
-        message: 'Token expiré. Veuillez vous reconnecter.'
+        message: 'Token expiré. Veuillez vous reconnecter.',
       });
     }
-    
-    logger.error('Erreur d\'authentification:', error);
+
+    logger.error("Erreur d'authentification:", error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'authentification.'
+      message: "Erreur lors de l'authentification.",
     });
   }
 };
 
+// ============================================================
 // Middleware pour rafraîchir le token
+// ============================================================
 const requireRefreshToken = async (req, res, next) => {
   try {
     const { refreshToken } = req.body;
-    
+
     if (!refreshToken) {
       return res.status(401).json({
         success: false,
-        message: 'Refresh token manquant.'
+        message: 'Refresh token manquant.',
       });
     }
 
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     const user = await User.findById(decoded.id).select('+refreshToken');
-    
+
     if (!user || user.refreshToken !== refreshToken) {
       return res.status(401).json({
         success: false,
-        message: 'Refresh token invalide.'
+        message: 'Refresh token invalide.',
       });
     }
 
     req.user = user;
     next();
   } catch (error) {
-    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+    if (
+      error.name === 'JsonWebTokenError' ||
+      error.name === 'TokenExpiredError'
+    ) {
       return res.status(401).json({
         success: false,
-        message: 'Refresh token invalide ou expiré.'
+        message: 'Refresh token invalide ou expiré.',
       });
     }
-    
+
     logger.error('Erreur refresh token:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors du rafraîchissement du token.'
+      message: 'Erreur lors du rafraîchissement du token.',
     });
   }
 };
 
+// ============================================================
+// ✅ EXPORTS
+// - requireAuth : nom officiel
+// - protect : ALIAS pour compatibilité avec les routes existantes
+// ============================================================
 module.exports = {
   requireAuth,
-  requireRefreshToken
+  requireRefreshToken,
+  protect: requireAuth, // ✅ AJOUT : alias
+  auth: requireAuth,    // ✅ alias optionnel
 };

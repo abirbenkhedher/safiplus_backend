@@ -7,6 +7,8 @@ const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
 
+
+
 // ============================================================
 // GET - Liste des réparations avec filtres
 // ============================================================
@@ -14,24 +16,24 @@ exports.getAll = async (req, res) => {
   try {
     const {
       search, status, categorie, client, reparateur, createdBy,
-      dateDebut, dateFin, adresse, limit = 50, page = 1, sort = '-createdAt'
+      dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
     } = req.query;
 
     const query = { isDeleted: false };
 
     if (status) query.status = status;
-    if (categorie) query.categorie = categorie;   // ✅ AJOUT
+    if (categorie) query.categorie = categorie;
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
 
-    // ✅ Filtre ADRESSE
-    if (adresse && adresse.trim() !== '') {
-      const clientsWithAdresse = await Client.find({
-        adresse: { $regex: adresse, $options: 'i' },
+    // ✅ Filtre ZONE (remplace adresse)
+    if (zone && zone.trim() !== '') {
+      const clientsWithZone = await Client.find({
+        zone: { $regex: `^${zone}$`, $options: 'i' },   // match exact insensible à la casse
       }).select('_id');
 
-      const clientIds = clientsWithAdresse.map((c) => c._id);
+      const clientIds = clientsWithZone.map((c) => c._id);
 
       if (clientIds.length > 0) {
         query.client = { $in: clientIds };
@@ -44,7 +46,7 @@ exports.getAll = async (req, res) => {
       }
     }
 
-    // ✅ Recherche globale multi-champs
+    // ✅ Recherche globale multi-champs (inclut zone)
     if (search) {
       const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
         Client.find({
@@ -54,6 +56,7 @@ exports.getAll = async (req, res) => {
             { phone2: { $regex: search, $options: 'i' } },
             { code: { $regex: search, $options: 'i' } },
             { adresse: { $regex: search, $options: 'i' } },
+            { zone: { $regex: search, $options: 'i' } },     // ✅ AJOUT
           ],
         }).select('_id'),
         Marque.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
@@ -89,7 +92,7 @@ exports.getAll = async (req, res) => {
 
     const [reparations, total] = await Promise.all([
       Reparation.find(query)
-        .populate('client', 'nom phone phone2 email code adresse')
+        .populate('client', 'nom phone phone2 email code adresse zone')   // ✅ ajout zone
         .populate('status', 'label color parDefault')
         .populate('categorie', 'nom')
         .populate('objet', 'nom')
@@ -933,7 +936,9 @@ exports.generatePDF = async (req, res) => {
       boutiqueAddress: process.env.BOUTIQUE_ADDRESS || 'Adresse',
       boutiquePhone: process.env.BOUTIQUE_PHONE || 'Tél',
       boutiqueEmail: process.env.BOUTIQUE_EMAIL || '',
-      footerMessage: process.env.TICKET_FOOTER || 'Merci de votre confiance!'
+      footerMessage: process.env.TICKET_FOOTER || 'Merci de votre confiance!',
+      offsetLeft: parseFloat(req.query.offsetLeft) || 0.2,     // ✅
+      offsetRight: parseFloat(req.query.offsetRight) || 0.2,   // ✅
     };
 
     const pdfBuffer = await pdfService.generateTicketPDF(reparation, options);
@@ -982,5 +987,49 @@ exports.getTicketHTML = async (req, res) => {
   } catch (error) {
     logger.error('Erreur getTicketHTML:', error);
     res.status(500).json({ success: false, message: 'Erreur lors de la génération du ticket' });
+  }
+};
+
+// ============================================================
+// ✅ DELETE - Supprimer plusieurs réparations
+// ============================================================
+exports.deleteMany = async (req, res) => {
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Aucune réparation à supprimer',
+      });
+    }
+
+    const result = await Reparation.updateMany(
+      { _id: { $in: ids }, isDeleted: false },
+      {
+        $set: {
+          isDeleted: true,
+          modifications: {
+            // optionnel : on peut logger le soft delete
+          },
+        },
+      }
+    );
+
+    logger.info(
+      `${result.modifiedCount} réparation(s) supprimée(s) par ${req.user.username}`
+    );
+
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} réparation(s) supprimée(s) avec succès`,
+      deletedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    logger.error('Erreur deleteMany reparations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression multiple',
+    });
   }
 };

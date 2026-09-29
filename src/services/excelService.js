@@ -17,28 +17,28 @@ const createWorkbook = () => {
  */
 const addHeader = (worksheet, headers) => {
   const headerRow = worksheet.addRow(headers);
-  
+
   headerRow.eachCell((cell) => {
     cell.font = {
       bold: true,
       color: { argb: 'FFFFFFFF' },
-      size: 11
+      size: 11,
     };
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF0D6EFD' }
+      fgColor: { argb: 'FF0D6EFD' },
     };
     cell.alignment = {
       vertical: 'middle',
       horizontal: 'center',
-      wrapText: true
+      wrapText: true,
     };
     cell.border = {
       top: { style: 'thin', color: { argb: 'FF000000' } },
       left: { style: 'thin', color: { argb: 'FF000000' } },
       bottom: { style: 'thin', color: { argb: 'FF000000' } },
-      right: { style: 'thin', color: { argb: 'FF000000' } }
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     };
   });
 
@@ -63,20 +63,20 @@ const styleDataRow = (row, isAlternate = false) => {
     cell.alignment = {
       vertical: 'middle',
       horizontal: 'left',
-      wrapText: true
+      wrapText: true,
     };
     cell.border = {
       top: { style: 'thin', color: { argb: 'FFDDDDDD' } },
       left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
       bottom: { style: 'thin', color: { argb: 'FFDDDDDD' } },
-      right: { style: 'thin', color: { argb: 'FFDDDDDD' } }
+      right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
     };
-    
+
     if (isAlternate) {
       cell.fill = {
         type: 'pattern',
         pattern: 'solid',
-        fgColor: { argb: 'FFF8F9FA' }
+        fgColor: { argb: 'FFF8F9FA' },
       };
     }
   });
@@ -90,34 +90,77 @@ const addTitle = (worksheet, title, subtitle = '', columnsCount = 10) => {
   const titleRow = worksheet.addRow([title]);
   worksheet.mergeCells(titleRow.number, 1, titleRow.number, columnsCount);
   titleRow.height = 30;
-  
+
   titleRow.getCell(1).font = {
     bold: true,
     size: 16,
-    color: { argb: 'FF0D6EFD' }
+    color: { argb: 'FF0D6EFD' },
   };
   titleRow.getCell(1).alignment = {
     vertical: 'middle',
-    horizontal: 'center'
+    horizontal: 'center',
   };
 
   if (subtitle) {
     const subtitleRow = worksheet.addRow([subtitle]);
-    worksheet.mergeCells(subtitleRow.number, 1, subtitleRow.number, columnsCount);
+    worksheet.mergeCells(
+      subtitleRow.number,
+      1,
+      subtitleRow.number,
+      columnsCount
+    );
     subtitleRow.height = 20;
-    
+
     subtitleRow.getCell(1).font = {
       size: 11,
       italic: true,
-      color: { argb: 'FF6C757D' }
+      color: { argb: 'FF6C757D' },
     };
     subtitleRow.getCell(1).alignment = {
       vertical: 'middle',
-      horizontal: 'center'
+      horizontal: 'center',
     };
   }
 
   worksheet.addRow([]);
+};
+
+// ============================================================
+// ✅ Helper : formater les filtres pour l'affichage
+// ============================================================
+const formatFilters = (filters = {}) => {
+  const labels = {
+    search: 'Recherche',
+    status: 'Statut',
+    categorie: 'Catégorie',
+    reparateur: 'Réparateur',
+    client: 'Client',
+    zone: 'Zone',
+    dateDebut: 'Date début',
+    dateFin: 'Date fin',
+    paymentStatus: 'Paiement',
+    hasReparations: 'Réparations',
+    topClients: 'Classement',
+  };
+
+  const valueLabels = {
+    paid: 'Entièrement payés',
+    unpaid: 'Aucun paiement',
+    partial: 'Partiellement payés',
+    yes: 'Avec réparations',
+    no: 'Sans réparation',
+    all: '',
+  };
+
+  const parts = Object.entries(filters)
+    .filter(([_, v]) => v && v !== 'all' && String(v).trim() !== '')
+    .map(([k, v]) => {
+      const label = labels[k] || k;
+      const val = valueLabels[v] || v;
+      return `${label}: ${val}`;
+    });
+
+  return parts.length > 0 ? parts.join(' | ') : null;
 };
 
 // ============================================
@@ -130,23 +173,25 @@ const exportReparations = async (reparations, filters = {}) => {
   // Définir les colonnes
   const headers = [
     'N°', 'Date création', 'Client', 'Code client', 'Téléphone',
-    'Catégorie', 'Objet', 'Marque', 'Modèle', 'Problème',
-    'Statut', 'Prix (DT)', 'Acompte (DT)', 'Reste (DT)',
-    'Réparateur', 'Créé par', 'Date modification', 'Observation'
+    'Zone', 'Catégorie', 'Objet', 'Marque', 'Modèle',
+    'Problème', 'Statut', 'Prix (DT)', 'Acompte (DT)', 'Reste (DT)',
+    'Réparateur', 'Créé par', 'Date modification', 'Observation',
   ];
 
   const widths = [
     15, 18, 20, 12, 15,
-    15, 15, 15, 15, 30,
-    15, 12, 12, 12,
-    20, 20, 18, 30
+    15, 15, 15, 15, 15,
+    30, 15, 12, 12, 12,
+    20, 20, 18, 30,
   ];
 
   // Titre
   addTitle(
     worksheet,
     '📋 LISTE DES RÉPARATIONS',
-    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${reparations.length} réparation(s)`,
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${
+      reparations.length
+    } réparation(s)`,
     headers.length
   );
 
@@ -157,22 +202,25 @@ const exportReparations = async (reparations, filters = {}) => {
   // Couleurs des statuts
   const statusColors = {
     'En attente': 'FFFFC107',
-    'Diagnostic': 'FF17A2B8',
+    Diagnostic: 'FF17A2B8',
     'En réparation': 'FF0D6EFD',
-    'Réparé': 'FF198754',
-    'Livré': 'FF28A745',
+    'En cours': 'FF0D6EFD',
+    Réparé: 'FF198754',
+    Livré: 'FF28A745',
     'Non réparable': 'FFDC3545',
-    'Annulé': 'FF6C757D',
-    'Prêt': 'FF20C997',
-    'Devis': 'FF6F42C1',
-    'Attente validation': 'FFFD7E14'
+    'Non réparé': 'FFDC3545',
+    Annulé: 'FF6C757D',
+    Prêt: 'FF20C997',
+    Devis: 'FF6F42C1',
+    'Attente validation': 'FFFD7E14',
+    SAV: 'FF8B5CF6',
   };
 
   let totalPrix = 0;
   let totalAcompte = 0;
   let totalReste = 0;
 
-  // Ajouter les données en utilisant des TABLEAUX
+  // Ajouter les données
   reparations.forEach((rep, index) => {
     const prix = rep.prix || 0;
     const acompte = rep.acompte || 0;
@@ -182,50 +230,74 @@ const exportReparations = async (reparations, filters = {}) => {
     totalAcompte += acompte;
     totalReste += reste;
 
+    // ✅ Extraire les noms (au cas où ce sont des objets populate)
+    const marqueNom =
+      typeof rep.marque === 'object' && rep.marque !== null
+        ? rep.marque.nom
+        : rep.marque || 'N/A';
+    const modeleNom =
+      typeof rep.modele === 'object' && rep.modele !== null
+        ? rep.modele.nom
+        : rep.modele || '-';
+
+    // ✅ Pannes : gérer tableau OU string
+    const pannesTexte = Array.isArray(rep.panneType)
+      ? rep.panneType.join(', ')
+      : rep.panneType || 'N/A';
+
     const rowData = [
       rep.numero || 'N/A',
-      rep.createdAt ? new Date(rep.createdAt).toLocaleDateString('fr-FR') : 'N/A',
+      rep.createdAt
+        ? new Date(rep.createdAt).toLocaleDateString('fr-FR')
+        : 'N/A',
       rep.client?.nom || 'N/A',
       rep.client?.code || 'N/A',
       rep.client?.phone || 'N/A',
+      rep.client?.zone || '-',                  // ✅ NOUVEAU : Zone
       rep.categorie?.nom || 'N/A',
       rep.objet?.nom || 'N/A',
-      rep.marque || 'N/A',
-      rep.modele || '-',
-      rep.problemeDeclare || 'N/A',
+      marqueNom,
+      modeleNom,
+      pannesTexte,                              // ✅ Pannes multi
       rep.status?.label || 'N/A',
       prix,
       acompte,
       reste,
-      rep.reparateur ? `${rep.reparateur.firstName} ${rep.reparateur.lastName}` : 'Non assigné',
-      rep.createdBy ? `${rep.createdBy.firstName} ${rep.createdBy.lastName}` : 'N/A',
-      rep.updatedAt ? new Date(rep.updatedAt).toLocaleDateString('fr-FR') : 'N/A',
-      rep.observation || '-'
+      rep.reparateur
+        ? `${rep.reparateur.firstName} ${rep.reparateur.lastName}`
+        : 'Non assigné',
+      rep.createdBy
+        ? `${rep.createdBy.firstName} ${rep.createdBy.lastName}`
+        : 'N/A',
+      rep.updatedAt
+        ? new Date(rep.updatedAt).toLocaleDateString('fr-FR')
+        : 'N/A',
+      rep.observation || '-',
     ];
 
     const row = worksheet.addRow(rowData);
     styleDataRow(row, index % 2 === 1);
 
-    // Colorer la colonne Statut (colonne 11)
-    const statusCell = row.getCell(11);
+    // Colorer la colonne Statut (colonne 12 maintenant)
+    const statusCell = row.getCell(12);
     if (rep.status?.label && statusColors[rep.status.label]) {
       statusCell.fill = {
         type: 'pattern',
         pattern: 'solid',
-        fgColor: { argb: statusColors[rep.status.label] }
+        fgColor: { argb: statusColors[rep.status.label] },
       };
       statusCell.font = {
         bold: true,
-        color: { argb: 'FFFFFFFF' }
+        color: { argb: 'FFFFFFFF' },
       };
       statusCell.alignment = {
         vertical: 'middle',
-        horizontal: 'center'
+        horizontal: 'center',
       };
     }
 
-    // Formater les montants (colonnes 12, 13, 14)
-    [12, 13, 14].forEach(colIndex => {
+    // Formater les montants (colonnes 13, 14, 15)
+    [13, 14, 15].forEach((colIndex) => {
       const cell = row.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
@@ -234,11 +306,11 @@ const exportReparations = async (reparations, filters = {}) => {
 
   // Ligne de totaux
   if (reparations.length > 0) {
-    const totalRowData = new Array(18).fill('');
-    totalRowData[10] = 'TOTAUX';
-    totalRowData[11] = totalPrix;
-    totalRowData[12] = totalAcompte;
-    totalRowData[13] = totalReste;
+    const totalRowData = new Array(headers.length).fill('');
+    totalRowData[11] = 'TOTAUX';
+    totalRowData[12] = totalPrix;
+    totalRowData[13] = totalAcompte;
+    totalRowData[14] = totalReste;
 
     const totalRow = worksheet.addRow(totalRowData);
 
@@ -247,36 +319,40 @@ const exportReparations = async (reparations, filters = {}) => {
       cell.fill = {
         type: 'pattern',
         pattern: 'solid',
-        fgColor: { argb: 'FFE7F1FF' }
+        fgColor: { argb: 'FFE7F1FF' },
       };
       cell.border = {
         top: { style: 'medium', color: { argb: 'FF0D6EFD' } },
         bottom: { style: 'medium', color: { argb: 'FF0D6EFD' } },
         left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
-        right: { style: 'thin', color: { argb: 'FFDDDDDD' } }
+        right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
       };
     });
 
-    totalRow.getCell(11).alignment = { vertical: 'middle', horizontal: 'center' };
+    totalRow.getCell(12).alignment = {
+      vertical: 'middle',
+      horizontal: 'center',
+    };
 
-    [12, 13, 14].forEach(colIndex => {
+    [13, 14, 15].forEach((colIndex) => {
       const cell = totalRow.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
     });
   }
 
-  // Filtres appliqués
-  const activeFilters = Object.entries(filters)
-    .filter(([_, v]) => v)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join(' | ');
+  // ✅ Filtres appliqués (avec formatFilters)
+  const activeFilters = formatFilters(filters);
 
   if (activeFilters) {
     worksheet.addRow([]);
     const filterRow = worksheet.addRow([`Filtres appliqués: ${activeFilters}`]);
     worksheet.mergeCells(filterRow.number, 1, filterRow.number, headers.length);
-    filterRow.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6C757D' } };
+    filterRow.getCell(1).font = {
+      italic: true,
+      size: 9,
+      color: { argb: 'FF6C757D' },
+    };
   }
 
   // Figer les en-têtes (lignes 1-4)
@@ -288,21 +364,28 @@ const exportReparations = async (reparations, filters = {}) => {
 // ============================================
 // EXPORT CLIENTS
 // ============================================
-const exportClients = async (clients) => {
+const exportClients = async (clients, filters = {}) => {
   const workbook = createWorkbook();
   const worksheet = workbook.addWorksheet('Clients');
 
   const headers = [
-    'Code', 'Nom', 'Téléphone', 'Email', 'Adresse',
-    'Statut', 'Nb réparations', 'Total payé (DT)', 'Total restant (DT)', 'Date inscription'
+    'Code', 'Code fidélité', 'Nom', 'Téléphone', 'Téléphone 2',
+    'Email', 'Adresse', 'Zone', 'Statut',
+    'Nb réparations', 'Total payé (DT)', 'Total restant (DT)', 'Date inscription',
   ];
 
-  const widths = [12, 25, 18, 25, 30, 12, 15, 15, 15, 18];
+  const widths = [
+    12, 15, 25, 15, 15,
+    25, 30, 15, 12,
+    15, 15, 15, 18,
+  ];
 
   addTitle(
     worksheet,
     '👥 LISTE DES CLIENTS',
-    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${clients.length} client(s)`,
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${
+      clients.length
+    } client(s)`,
     headers.length
   );
 
@@ -315,32 +398,37 @@ const exportClients = async (clients) => {
   clients.forEach((client, index) => {
     const rowData = [
       client.code || 'N/A',
+      client.codeFidelite || '-',              // ✅ NOUVEAU : Code fidélité
       client.nom || 'N/A',
       client.phone || 'N/A',
+      client.phone2 || '-',                    // ✅ NOUVEAU : Téléphone 2
       client.email || '-',
       client.adresse || '-',
+      client.zone || '-',                      // ✅ NOUVEAU : Zone
       client.isActive ? 'Actif' : 'Inactif',
       client.totalReparations || 0,
       client.totalPaye || 0,
       client.totalRestant || 0,
-      client.createdAt ? new Date(client.createdAt).toLocaleDateString('fr-FR') : 'N/A'
+      client.createdAt
+        ? new Date(client.createdAt).toLocaleDateString('fr-FR')
+        : 'N/A',
     ];
 
     const row = worksheet.addRow(rowData);
     styleDataRow(row, index % 2 === 1);
 
-    // Statut (colonne 6)
-    const statusCell = row.getCell(6);
+    // Statut (colonne 9)
+    const statusCell = row.getCell(9);
     statusCell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: client.isActive ? 'FF198754' : 'FF6C757D' }
+      fgColor: { argb: client.isActive ? 'FF198754' : 'FF6C757D' },
     };
     statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
     statusCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
-    // Montants (colonnes 8 et 9)
-    [8, 9].forEach(colIndex => {
+    // Montants (colonnes 11 et 12)
+    [11, 12].forEach((colIndex) => {
       const cell = row.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
@@ -352,11 +440,11 @@ const exportClients = async (clients) => {
 
   // Totaux
   if (clients.length > 0) {
-    const totalRowData = new Array(10).fill('');
-    totalRowData[1] = 'TOTAUX';
-    totalRowData[6] = clients.length;
-    totalRowData[7] = totalPaye;
-    totalRowData[8] = totalRestant;
+    const totalRowData = new Array(headers.length).fill('');
+    totalRowData[2] = 'TOTAUX';
+    totalRowData[9] = clients.length;
+    totalRowData[10] = totalPaye;
+    totalRowData[11] = totalRestant;
 
     const totalRow = worksheet.addRow(totalRowData);
 
@@ -365,15 +453,29 @@ const exportClients = async (clients) => {
       cell.fill = {
         type: 'pattern',
         pattern: 'solid',
-        fgColor: { argb: 'FFE7F1FF' }
+        fgColor: { argb: 'FFE7F1FF' },
       };
     });
 
-    [8, 9].forEach(colIndex => {
+    [11, 12].forEach((colIndex) => {
       const cell = totalRow.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
     });
+  }
+
+  // ✅ Filtres appliqués
+  const activeFilters = formatFilters(filters);
+
+  if (activeFilters) {
+    worksheet.addRow([]);
+    const filterRow = worksheet.addRow([`Filtres appliqués: ${activeFilters}`]);
+    worksheet.mergeCells(filterRow.number, 1, filterRow.number, headers.length);
+    filterRow.getCell(1).font = {
+      italic: true,
+      size: 9,
+      color: { argb: 'FF6C757D' },
+    };
   }
 
   worksheet.views = [{ state: 'frozen', ySplit: 4 }];
@@ -389,8 +491,8 @@ const exportUsers = async (users) => {
   const worksheet = workbook.addWorksheet('Utilisateurs');
 
   const headers = [
-    '#', 'Nom complet', 'Nom d\'utilisateur', 'Email', 'Rôle',
-    'Statut', 'Nb réparations', 'Dernière connexion', 'Date création'
+    '#', 'Nom complet', "Nom d'utilisateur", 'Email', 'Rôle',
+    'Statut', 'Nb réparations', 'Dernière connexion', 'Date création',
   ];
 
   const widths = [8, 25, 18, 30, 18, 12, 15, 22, 18];
@@ -398,7 +500,9 @@ const exportUsers = async (users) => {
   addTitle(
     worksheet,
     '👤 LISTE DES UTILISATEURS',
-    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${users.length} utilisateur(s)`,
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${
+      users.length
+    } utilisateur(s)`,
     headers.length
   );
 
@@ -408,13 +512,13 @@ const exportUsers = async (users) => {
   const roleLabels = {
     ADMIN: '👑 Administrateur',
     COMMERCIAL: '💼 Commercial',
-    REPARATEUR: '🔧 Réparateur'
+    REPARATEUR: '🔧 Réparateur',
   };
 
   const roleColors = {
     ADMIN: 'FFDC3545',
     COMMERCIAL: 'FF0D6EFD',
-    REPARATEUR: 'FFFFC107'
+    REPARATEUR: 'FFFFC107',
   };
 
   users.forEach((user, index) => {
@@ -426,8 +530,12 @@ const exportUsers = async (users) => {
       roleLabels[user.role] || user.role,
       user.isActive ? 'Actif' : 'Inactif',
       user.reparationsCount || 0,
-      user.lastLogin ? new Date(user.lastLogin).toLocaleString('fr-FR') : 'Jamais connecté',
-      user.createdAt ? new Date(user.createdAt).toLocaleDateString('fr-FR') : 'N/A'
+      user.lastLogin
+        ? new Date(user.lastLogin).toLocaleString('fr-FR')
+        : 'Jamais connecté',
+      user.createdAt
+        ? new Date(user.createdAt).toLocaleDateString('fr-FR')
+        : 'N/A',
     ];
 
     const row = worksheet.addRow(rowData);
@@ -439,7 +547,7 @@ const exportUsers = async (users) => {
       roleCell.fill = {
         type: 'pattern',
         pattern: 'solid',
-        fgColor: { argb: roleColors[user.role] }
+        fgColor: { argb: roleColors[user.role] },
       };
       roleCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
       roleCell.alignment = { vertical: 'middle', horizontal: 'center' };
@@ -450,7 +558,7 @@ const exportUsers = async (users) => {
     statusCell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: user.isActive ? 'FF198754' : 'FF6C757D' }
+      fgColor: { argb: user.isActive ? 'FF198754' : 'FF6C757D' },
     };
     statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
     statusCell.alignment = { vertical: 'middle', horizontal: 'center' };
@@ -474,7 +582,9 @@ const exportHistory = async (history) => {
   addTitle(
     worksheet,
     '📜 HISTORIQUE DES ACTIONS',
-    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${history.length} action(s)`,
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${
+      history.length
+    } action(s)`,
     headers.length
   );
 
@@ -487,14 +597,16 @@ const exportHistory = async (history) => {
     DELETE: 'Suppression',
     STATUS_CHANGE: 'Changement statut',
     ASSIGN: 'Assignation',
-    PAYMENT: 'Paiement'
+    PAYMENT: 'Paiement',
   };
 
   history.forEach((item, index) => {
     let details = '';
-    
+
     if (item.action === 'STATUS_CHANGE') {
-      details = `${item.oldStatus?.label || 'N/A'} → ${item.newStatus?.label || 'N/A'}`;
+      details = `${item.oldStatus?.label || 'N/A'} → ${
+        item.newStatus?.label || 'N/A'
+      }`;
     } else if (item.action === 'UPDATE' && item.changes) {
       details = Object.entries(item.changes)
         .map(([key, val]) => `${key}: ${val.old} → ${val.new}`)
@@ -516,7 +628,7 @@ const exportHistory = async (history) => {
       item.user ? `${item.user.firstName} ${item.user.lastName}` : 'Système',
       item.entityType,
       actionLabels[item.action] || item.action,
-      details || '-'
+      details || '-',
     ];
 
     const row = worksheet.addRow(rowData);
@@ -537,10 +649,7 @@ const sendWorkbook = async (res, workbook, filename) => {
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${filename}"`
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
     await workbook.xlsx.write(res);
     res.end();
@@ -555,5 +664,5 @@ module.exports = {
   exportClients,
   exportUsers,
   exportHistory,
-  sendWorkbook
+  sendWorkbook,
 };

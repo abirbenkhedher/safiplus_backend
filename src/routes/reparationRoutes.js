@@ -4,6 +4,9 @@ const { requireAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const reparationController = require('../controllers/reparationController');
 
+
+router.delete('/many',requireAuth ,requirePermission('reparations'), reparationController.deleteMany);
+
 // ✅ Toutes les routes nécessitent "reparations"
 router.get('/', requireAuth, requirePermission('reparations'), reparationController.getAll);
 router.get('/:id', requireAuth, requirePermission('reparations'), reparationController.getOne);
