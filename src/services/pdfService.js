@@ -79,7 +79,6 @@ const formatPannes = (pannes) => {
 // ============================================================
 const getLogoDataUrl = () => {
   try {
-    // Chercher dans plusieurs emplacements possibles
     const possiblePaths = [
       path.join(__dirname, '..', 'assets', 'logo.png'),
       path.join(__dirname, '..', '..', 'assets', 'logo.png'),
@@ -91,7 +90,8 @@ const getLogoDataUrl = () => {
         const logoBuffer = fs.readFileSync(logoPath);
         const base64 = logoBuffer.toString('base64');
         const ext = path.extname(logoPath).slice(1).toLowerCase();
-        const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
+        const mimeType =
+          ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
         return `data:${mimeType};base64,${base64}`;
       }
     }
@@ -116,32 +116,75 @@ const generateTicketContent = (reparation, options = {}) => {
 
   const lines = [];
 
-  lines.push({ text: centerText(boutiqueName, width), size: 'large', bold: true });
-  lines.push({ text: centerText(boutiqueAddress, width), size: 'small' });
-  lines.push({ text: centerText(boutiquePhone, width), size: 'small' });
+  lines.push({
+    text: centerText(boutiqueName, width),
+    size: 'large',
+    bold: true,
+  });
+  lines.push({
+    text: centerText(boutiqueAddress, width),
+    size: 'small',
+  });
+  lines.push({
+    text: centerText(boutiquePhone, width),
+    size: 'small',
+  });
   if (boutiqueEmail) {
-    lines.push({ text: centerText(boutiqueEmail, width), size: 'small' });
+    lines.push({
+      text: centerText(boutiqueEmail, width),
+      size: 'small',
+    });
   }
   lines.push({ text: '='.repeat(width), size: 'small' });
 
-  lines.push({ text: centerText('REÇU DE RÉPARATION', width), size: 'medium', bold: true });
+  lines.push({
+    text: centerText('REÇU DE RÉPARATION', width),
+    size: 'medium',
+    bold: true,
+  });
   lines.push({ text: '='.repeat(width), size: 'small' });
 
-  lines.push({ text: formatLine('N° Reçu:', reparation.numero, width), size: 'normal', bold: true });
-  lines.push({ text: formatLine('Date:', new Date(reparation.createdAt).toLocaleString('fr-FR'), width), size: 'small' });
+  lines.push({
+    text: formatLine('N° Reçu:', reparation.numero, width),
+    size: 'normal',
+    bold: true,
+  });
+  lines.push({
+    text: formatLine(
+      'Date:',
+      new Date(reparation.createdAt).toLocaleString('fr-FR'),
+      width
+    ),
+    size: 'small',
+  });
 
   lines.push({ text: '-'.repeat(width), size: 'small' });
 
   lines.push({ text: 'CLIENT', size: 'normal', bold: true });
   if (reparation.client) {
-    lines.push({ text: formatLine('Nom:', reparation.client.nom, width), size: 'small' });
-    lines.push({ text: formatLine('Code:', reparation.client.code, width), size: 'small' });
-    lines.push({ text: formatLine('Tél:', reparation.client.phone, width), size: 'small' });
+    lines.push({
+      text: formatLine('Nom:', reparation.client.nom, width),
+      size: 'small',
+    });
+    lines.push({
+      text: formatLine('Code:', reparation.client.code, width),
+      size: 'small',
+    });
+    lines.push({
+      text: formatLine('Tél:', reparation.client.phone, width),
+      size: 'small',
+    });
     if (reparation.client.phone2) {
-      lines.push({ text: formatLine('Tél 2:', reparation.client.phone2, width), size: 'small' });
+      lines.push({
+        text: formatLine('Tél 2:', reparation.client.phone2, width),
+        size: 'small',
+      });
     }
     if (reparation.client.adresse) {
-      lines.push({ text: formatLine('Adresse:', reparation.client.adresse, width), size: 'small' });
+      lines.push({
+        text: formatLine('Adresse:', reparation.client.adresse, width),
+        size: 'small',
+      });
     }
   }
 
@@ -149,18 +192,30 @@ const generateTicketContent = (reparation, options = {}) => {
 
   lines.push({ text: 'APPAREIL', size: 'normal', bold: true });
   if (reparation.objet) {
-    lines.push({ text: formatLine('Type:', reparation.objet.nom, width), size: 'small' });
+    lines.push({
+      text: formatLine('Type:', reparation.objet.nom, width),
+      size: 'small',
+    });
   }
   if (reparation.categorie) {
-    lines.push({ text: formatLine('Catégorie:', reparation.categorie.nom, width), size: 'small' });
+    lines.push({
+      text: formatLine('Catégorie:', reparation.categorie.nom, width),
+      size: 'small',
+    });
   }
 
   const marqueNom = getNom(reparation.marque);
-  lines.push({ text: formatLine('Marque:', marqueNom || 'N/A', width), size: 'small' });
+  lines.push({
+    text: formatLine('Marque:', marqueNom || 'N/A', width),
+    size: 'small',
+  });
 
   const modeleNom = getNom(reparation.modele);
   if (modeleNom) {
-    lines.push({ text: formatLine('Modèle:', modeleNom, width), size: 'small' });
+    lines.push({
+      text: formatLine('Modèle:', modeleNom, width),
+      size: 'small',
+    });
   }
 
   lines.push({ text: '-'.repeat(width), size: 'small' });
@@ -175,10 +230,28 @@ const generateTicketContent = (reparation, options = {}) => {
   lines.push({ text: '-'.repeat(width), size: 'small' });
 
   lines.push({ text: 'FINANCES', size: 'normal', bold: true });
-  lines.push({ text: formatLine('Prix total:', `${(reparation.prix || 0).toFixed(2)} DT`, width), size: 'small' });
-  lines.push({ text: formatLine('Acompte:', `${(reparation.acompte || 0).toFixed(2)} DT`, width), size: 'small' });
   lines.push({
-    text: formatLine('Reste à payer:', `${((reparation.prix || 0) - (reparation.acompte || 0)).toFixed(2)} DT`, width),
+    text: formatLine(
+      'Prix total:',
+      `${(reparation.prix || 0).toFixed(2)} DT`,
+      width
+    ),
+    size: 'small',
+  });
+  lines.push({
+    text: formatLine(
+      'Acompte:',
+      `${(reparation.acompte || 0).toFixed(2)} DT`,
+      width
+    ),
+    size: 'small',
+  });
+  lines.push({
+    text: formatLine(
+      'Reste à payer:',
+      `${((reparation.prix || 0) - (reparation.acompte || 0)).toFixed(2)} DT`,
+      width
+    ),
     size: 'normal',
     bold: true,
   });
@@ -206,7 +279,8 @@ const generateTicketPDF = (reparation, options = {}) => {
       const content = generateTicketContent(reparation, options);
 
       content.forEach((item) => {
-        const fontSize = TICKET_CONFIG.fontSizes[item.size] || TICKET_CONFIG.fontSizes.normal;
+        const fontSize =
+          TICKET_CONFIG.fontSizes[item.size] || TICKET_CONFIG.fontSizes.normal;
         doc.fontSize(fontSize);
 
         if (item.bold) {
@@ -230,15 +304,8 @@ const generateTicketPDF = (reparation, options = {}) => {
 };
 
 /**
- * ✅ Génère le HTML du ticket avec :
- * - Logo + N° + Date + Créé par (en haut)
- * - Client (sans email)
- * - Appareil
- * - Panne
- * - Finances
- * - QR Code
- * - Phrase arabe d'avertissement
- * - Infos boutique
+ * ✅ Génère le HTML du ticket
+ * Police plus grande et espacement amélioré pour une meilleure lisibilité
  */
 const generateTicketHTML = async (reparation, options = {}) => {
   const {
@@ -247,15 +314,17 @@ const generateTicketHTML = async (reparation, options = {}) => {
     boutiquePhone = process.env.BOUTIQUE_PHONE || 'Tél: XX XXX XXX',
     boutiqueEmail = process.env.BOUTIQUE_EMAIL || '',
     footerMessage = 'Merci de votre confiance!',
-    offsetTop = 5,
+    offsetTop = 4,
     offsetLeft = 0,
     offsetRight = 0,
-    ticketWidth = 74,        // ✅ Largeur du contenu (centré dans 80mm)
-    paperWidth = 80,         // ✅ Largeur du papier (80mm standard)
-    fontSize = 10,
+    ticketWidth = 74,
+    paperWidth = 80,
+    fontSize = 12,           // ✅ Police plus grande par défaut (12 au lieu de 10)
   } = options;
 
-  const reparationData = reparation.toObject ? reparation.toObject() : reparation;
+  const reparationData = reparation.toObject
+    ? reparation.toObject()
+    : reparation;
 
   const frontendUrl =
     process.env.FRONTEND_URL ||
@@ -267,7 +336,7 @@ const generateTicketHTML = async (reparation, options = {}) => {
   let qrCodeDataUrl = '';
   try {
     qrCodeDataUrl = await QRCode.toDataURL(qrData, {
-      width: 200,
+      width: 220,
       margin: 1,
       color: { dark: '#000000', light: '#FFFFFF' },
       errorCorrectionLevel: 'M',
@@ -282,7 +351,9 @@ const generateTicketHTML = async (reparation, options = {}) => {
   const pannesTexte = formatPannes(reparationData.panneType);
 
   const createurNom = reparationData.createdBy
-    ? `${reparationData.createdBy.firstName || ''} ${reparationData.createdBy.lastName || ''}`.trim() ||
+    ? `${reparationData.createdBy.firstName || ''} ${
+        reparationData.createdBy.lastName || ''
+      }`.trim() ||
       reparationData.createdBy.username ||
       'N/A'
     : 'N/A';
@@ -316,44 +387,47 @@ const generateTicketHTML = async (reparation, options = {}) => {
     /* ✅ WRAPPER CENTRÉ */
     .ticket-wrapper {
       width: ${ticketWidth}mm;
-      margin: 0 auto;              /* ✅ centrage horizontal automatique */
+      margin: 0 auto;
       padding-top: ${offsetTop}mm;
       padding-left: ${offsetLeft}mm;
       padding-right: ${offsetRight}mm;
-      padding-bottom: 5mm;
+      padding-bottom: 4mm;
       font-family: 'Courier New', Courier, monospace;
       font-size: ${fontSize}px;
-      line-height: 1.2;
+      line-height: 1.35;                 /* ✅ Espacement augmenté */
       box-sizing: border-box;
+      font-weight: 500;                  /* ✅ Texte légèrement plus épais */
     }
 
     .center { text-align: center; }
-    .bold { font-weight: bold; }
-    .large { font-size: ${fontSize + 2}px; }
-    .medium { font-size: ${fontSize + 1}px; }
+    .bold { font-weight: 700; }
+    .large { font-size: ${fontSize + 4}px; }    /* ✅ Plus grand */
+    .medium { font-size: ${fontSize + 2}px; }   /* ✅ Plus grand */
     .small { font-size: ${fontSize - 1}px; }
     .xsmall { font-size: ${fontSize - 2}px; }
     .tiny { font-size: ${fontSize - 3}px; }
 
     .separator {
       border-top: 1px dashed #000;
-      margin: 4px 0;
+      margin: 6px 0;                    /* ✅ Plus d'espace */
     }
 
     .double-separator {
       border-top: 2px solid #000;
-      margin: 4px 0;
+      margin: 6px 0;
     }
 
     .row {
       display: flex;
       justify-content: space-between;
-      margin: 2px 0;
-      gap: 4px;
+      margin: 4px 0;                    /* ✅ Plus d'espace vertical */
+      gap: 6px;
+      align-items: baseline;
     }
 
     .row span:first-child {
       flex-shrink: 0;
+      color: #333;
     }
 
     .row span:last-child {
@@ -361,113 +435,124 @@ const generateTicketHTML = async (reparation, options = {}) => {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      font-weight: 600;                 /* ✅ Valeur en gras */
     }
 
     .section-title {
-      font-weight: bold;
-      margin: 6px 0 3px;
+      font-weight: 800;                 /* ✅ Titre plus gras */
+      margin: 8px 0 4px;                /* ✅ Plus d'espace */
       text-transform: uppercase;
+      font-size: ${fontSize - 1}px;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #000;    /* ✅ Ligne sous le titre */
+      padding-bottom: 2px;
     }
 
+    /* ✅ EN-TÊTE LOGO + INFOS */
     .header-logo-block {
       display: flex;
       align-items: center;
-      justify-content: center;      /* ✅ centré */
-      gap: 8px;
-      margin-bottom: 6px;
-      padding-bottom: 4px;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      padding-bottom: 6px;
     }
 
     .header-logo-block img {
-      width: 50px;
-      height: 50px;
+      width: 60px;                     /* ✅ Logo plus grand */
+      height: 60px;
       object-fit: contain;
       flex-shrink: 0;
     }
 
     .header-infos {
-      flex: 0 1 auto;               /* ✅ ne pas prendre tout l'espace */
+      flex: 0 1 auto;
       min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 1px;
+      gap: 3px;                        /* ✅ Plus d'espace entre les lignes */
       text-align: left;
     }
 
     .header-infos .info-line {
       font-size: ${fontSize - 1}px;
-      line-height: 1.15;
+      line-height: 1.3;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
     .header-infos .info-line .label {
-      color: #444;
+      color: #333;
     }
 
     .header-infos .info-line .value {
-      font-weight: bold;
+      font-weight: 700;
     }
 
+    /* ✅ QR CODE */
     .qr-code {
       text-align: center;
-      margin: 8px 0;
-      padding: 4px;
+      margin: 10px 0;
+      padding: 6px;
     }
 
     .qr-code img {
-      width: 90px;
-      height: 90px;
+      width: 110px;                    /* ✅ QR plus grand */
+      height: 110px;
     }
 
     .qr-code-url {
-      font-size: ${fontSize - 3}px;
-      color: #666;
-      margin-top: 2px;
+      font-size: ${fontSize - 4}px;
+      color: #555;
+      margin-top: 3px;
       word-break: break-all;
-      line-height: 1.1;
+      line-height: 1.2;
     }
 
+    /* ✅ PHRASE ARABE */
     .arabic-block {
       direction: rtl;
       text-align: right;
       font-family: 'Arial', 'Tahoma', sans-serif;
-      font-size: ${fontSize}px;
-      line-height: 1.5;
-      margin: 6px 0;
-      padding: 4px 2px;
+      font-size: ${fontSize - 1}px;
+      line-height: 1.6;                /* ✅ Plus espacé pour l'arabe */
+      margin: 8px 0;
+      padding: 6px 3px;
       border-top: 1px dashed #000;
       border-bottom: 1px dashed #000;
+      font-weight: 600;
     }
 
     .arabic-block .line {
-      margin-bottom: 3px;
+      margin-bottom: 4px;
     }
 
+    /* ✅ INFOS BOUTIQUE */
     .shop-info {
       text-align: center;
       font-size: ${fontSize - 1}px;
-      line-height: 1.4;
-      margin-top: 8px;
-      font-weight: bold;
+      line-height: 1.5;
+      margin-top: 10px;
+      font-weight: 700;
     }
 
     .shop-info .shop-name {
-      font-size: ${fontSize}px;
-      margin-bottom: 2px;
+      font-size: ${fontSize + 1}px;
+      margin-bottom: 3px;
+      font-weight: 800;
     }
 
     .shop-info .shop-address {
       font-size: ${fontSize - 1}px;
-      font-weight: normal;
-      margin-bottom: 3px;
+      font-weight: 600;
+      margin-bottom: 4px;
     }
 
     .shop-info .shop-phones {
       font-size: ${fontSize - 2}px;
-      font-weight: normal;
-      line-height: 1.3;
+      font-weight: 600;
+      line-height: 1.4;
     }
 
     /* ✅ IMPRESSION */
@@ -485,11 +570,11 @@ const generateTicketHTML = async (reparation, options = {}) => {
 
       .ticket-wrapper {
         width: ${ticketWidth}mm;
-        margin: 0 auto;              /* ✅ centrage conservé */
+        margin: 0 auto;
         padding-top: ${offsetTop}mm;
         padding-left: ${offsetLeft}mm;
         padding-right: ${offsetRight}mm;
-        padding-bottom: 5mm;
+        padding-bottom: 4mm;
       }
 
       body {
@@ -506,7 +591,7 @@ const generateTicketHTML = async (reparation, options = {}) => {
 <body>
   <div class="ticket-wrapper">
 
-    <!-- EN-TÊTE : Logo + N° + Date + Créé par (centré) -->
+    <!-- EN-TÊTE : Logo + N° + Date + Créé par -->
     <div class="header-logo-block">
       ${logoDataUrl ? `<img src="${logoDataUrl}" alt="Logo" />` : ''}
       <div class="header-infos">
@@ -516,7 +601,9 @@ const generateTicketHTML = async (reparation, options = {}) => {
         </div>
         <div class="info-line">
           <span class="label">Créé le :</span>
-          <span class="value">${new Date(reparationData.createdAt).toLocaleDateString('fr-FR')}</span>
+          <span class="value">${new Date(
+            reparationData.createdAt
+          ).toLocaleDateString('fr-FR')}</span>
         </div>
         <div class="info-line">
           <span class="label">Créé par :</span>
@@ -529,47 +616,72 @@ const generateTicketHTML = async (reparation, options = {}) => {
 
     <!-- CLIENT -->
     <div class="section-title">Client</div>
-    <div class="row small"><span>Nom:</span><span>${reparationData.client?.nom || 'N/A'}</span></div>
-    <div class="row small"><span>Code:</span><span>${reparationData.client?.code || 'N/A'}</span></div>
-    <div class="row small"><span>Tél:</span><span>${reparationData.client?.phone || 'N/A'}</span></div>
-    ${reparationData.client?.phone2 ? `<div class="row small"><span>Tél 2:</span><span>${reparationData.client.phone2}</span></div>` : ''}
-    ${reparationData.client?.adresse ? `<div class="row small"><span>Adresse:</span><span>${reparationData.client.adresse}</span></div>` : ''}
+    <div class="row small"><span>Nom:</span><span>${
+      reparationData.client?.nom || 'N/A'
+    }</span></div>
+    <div class="row small"><span>Code:</span><span>${
+      reparationData.client?.code || 'N/A'
+    }</span></div>
+    <div class="row small"><span>Tél:</span><span>${
+      reparationData.client?.phone || 'N/A'
+    }</span></div>
     <div class="separator"></div>
 
     <!-- APPAREIL -->
     <div class="section-title">Appareil</div>
-    ${reparationData.objet ? `<div class="row small"><span>Type:</span><span>${reparationData.objet.nom}</span></div>` : ''}
-    ${reparationData.categorie ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>` : ''}
+    ${
+      reparationData.objet
+        ? `<div class="row small"><span>Type:</span><span>${reparationData.objet.nom}</span></div>`
+        : ''
+    }
+    ${
+      reparationData.categorie
+        ? `<div class="row small"><span>Catégorie:</span><span>${reparationData.categorie.nom}</span></div>`
+        : ''
+    }
     <div class="row small"><span>Marque:</span><span>${marqueNom}</span></div>
-    ${modeleNom ? `<div class="row small"><span>Modèle:</span><span>${modeleNom}</span></div>` : ''}
     <div class="separator"></div>
 
     <!-- PANNE -->
     <div class="section-title">Type de panne</div>
-    <div class="small">${pannesTexte}</div>
+    <div class="small" style="font-weight: 600; margin: 4px 0;">${pannesTexte}</div>
     <div class="separator"></div>
 
     <!-- FINANCES -->
     <div class="section-title">Finances</div>
-    <div class="row small"><span>Prix total:</span><span>${(reparationData.prix || 0).toFixed(2)} DT</span></div>
-    <div class="row small"><span>Acompte:</span><span>${(reparationData.acompte || 0).toFixed(2)} DT</span></div>
-    <div class="row bold"><span>Reste à payer:</span><span>${((reparationData.prix || 0) - (reparationData.acompte || 0)).toFixed(2)} DT</span></div>
+    <div class="row small"><span>Prix total:</span><span>${(
+      reparationData.prix || 0
+    ).toFixed(2)} DT</span></div>
+    <div class="row small"><span>Acompte:</span><span>${(
+      reparationData.acompte || 0
+    ).toFixed(2)} DT</span></div>
+    <div class="row bold"><span>Reste à payer:</span><span>${(
+      (reparationData.prix || 0) - (reparationData.acompte || 0)
+    ).toFixed(2)} DT</span></div>
 
-    ${reparationData.observation ? `
+    ${
+      reparationData.observation
+        ? `
     <div class="separator"></div>
     <div class="section-title">Observation</div>
-    <div class="small">${reparationData.observation}</div>
-    ` : ''}
+    <div class="small" style="font-weight: 600;">${reparationData.observation}</div>
+    `
+        : ''
+    }
 
     <!-- QR CODE -->
-    ${qrCodeDataUrl ? `
+    ${
+      qrCodeDataUrl
+        ? `
     <div class="separator"></div>
     <div class="qr-code">
       <img src="${qrCodeDataUrl}" alt="QR Code" />
-      <div class="small">📱 Scannez pour suivre votre réparation</div>
+      <div class="small" style="margin-top: 4px; font-weight: 600;">📱 Scannez pour suivre votre réparation</div>
       <div class="qr-code-url">${qrData}</div>
     </div>
-    ` : ''}
+    `
+        : ''
+    }
 
     <!-- PHRASE ARABE -->
     <div class="arabic-block">
@@ -586,12 +698,6 @@ const generateTicketHTML = async (reparation, options = {}) => {
         GSM Technique Saheb Jebel : 95 832 935
       </div>
     </div>
-
-    <div class="double-separator"></div>
-
-    <div class="center small">${footerMessage}</div>
-    <div class="center small">Conservez ce reçu</div>
-    <div class="center tiny">Imprimé le ${new Date().toLocaleString('fr-FR')}</div>
 
   </div>
 </body>
