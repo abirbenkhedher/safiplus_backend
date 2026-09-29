@@ -8,15 +8,16 @@ const clientSchema = new mongoose.Schema({
     sparse: true,
     default: null
   },
-  // ✅ NOUVEAU : Code fidélité (unique, généré automatiquement)
+
+  // ✅ Code fidélité — FACULTATIF, AUCUNE génération automatique
   codeFidelite: {
     type: String,
-    unique: true,
-    trim: true,
-    uppercase: true,
     sparse: true,
-    default: null
+    uppercase: true,
+    trim: true,
+    default: undefined,
   },
+
   nom: {
     type: String,
     required: [true, 'Le nom est obligatoire'],
@@ -65,7 +66,8 @@ const clientSchema = new mongoose.Schema({
 });
 
 // ============================================================
-// ✅ Middleware : génération du code client + code fidélité
+// ✅ Middleware : génération UNIQUEMENT du code client (C001, C002...)
+// ❌ PLUS AUCUNE génération de code fidélité
 // ============================================================
 clientSchema.pre('validate', async function() {
   // Génération du code client (C001, C002, ...)
@@ -81,32 +83,9 @@ clientSchema.pre('validate', async function() {
     }
   }
 
-  // ✅ Génération du code fidélité (FID-XXXXXX)
-  if (this.isNew && !this.codeFidelite) {
-    try {
-      // Générer un code unique basé sur un compteur + timestamp
-      let code;
-      let exists = true;
-      let attempts = 0;
-
-      while (exists && attempts < 10) {
-        const count = await this.constructor.countDocuments();
-        const randomPart = Math.floor(Math.random() * 9000 + 1000); // 1000-9999
-        code = `FID-${String(count + 1).padStart(3, '0')}${randomPart}`;
-
-        // Vérifier unicité
-        const existing = await this.constructor.findOne({ codeFidelite: code });
-        exists = Boolean(existing);
-        attempts++;
-      }
-
-      this.codeFidelite = code;
-      console.log(`🎁 Code fidélité généré: ${this.codeFidelite}`);
-    } catch (error) {
-      console.error('❌ Erreur génération code fidélité:', error);
-      // Fallback : code basé sur le timestamp
-      this.codeFidelite = `FID-${Date.now().toString().slice(-6)}`;
-    }
+  // ✅ Nettoyage : si codeFidelite est vide ("" ou null), on le retire complètement
+  if (this.codeFidelite === '' || this.codeFidelite === null) {
+    this.codeFidelite = undefined;
   }
 });
 
@@ -121,7 +100,7 @@ clientSchema.index({
   phone2: 'text',
   email: 'text',
   code: 'text',
-  codeFidelite: 'text',    // ✅ AJOUT
+  codeFidelite: 'text',
 });
 
 module.exports = mongoose.model('Client', clientSchema);
