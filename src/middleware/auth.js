@@ -3,6 +3,12 @@ const User = require('../models/User');
 const logger = require('../config/logger');
 
 // ============================================================
+// ✅ CONFIGURATION INACTIVITÉ
+// ============================================================
+const INACTIVITY_LIMIT_MS = 1 * 60 * 1000; // 1 minute (à ajuster : 10 * 60 * 1000 pour 10 min)
+const AUTO_LOGOUT_ROLES = ['COMMERCIAL'];
+
+// ============================================================
 // Middleware d'authentification
 // ============================================================
 const requireAuth = async (req, res, next) => {
@@ -18,7 +24,6 @@ const requireAuth = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // ✅ Récupérer l'utilisateur complet avec permissions
     const user = await User.findById(decoded.id).select(
       '-password -refreshToken'
     );
@@ -36,6 +41,48 @@ const requireAuth = async (req, res, next) => {
         message: 'Compte désactivé.',
       });
     }
+
+    // ============================================================
+    // ✅ CONTRÔLE D'INACTIVITÉ (COMMERCIAL uniquement)
+    // ============================================================
+    if (AUTO_LOGOUT_ROLES.includes(user.role)) {
+      const now = Date.now();
+
+      // Si lastActivity n'existe pas (première connexion), on l'initialise
+      if (!user.lastActivity) {
+        await User.updateOne(
+          { _id: user._id },
+          { $set: { lastActivity: new Date(now) } }
+        );
+      } else {
+        const elapsed = now - new Date(user.lastActivity).getTime();
+
+        if (elapsed > INACTIVITY_LIMIT_MS) {
+          // ✅ Invalider le refresh token ET réinitialiser lastActivity
+          // pour éviter que la prochaine connexion soit immédiatement bloquée
+          await User.updateOne(
+            { _id: user._id },
+            {
+              $unset: { refreshToken: 1 },
+              $set: { lastActivity: new Date(now) },
+            }
+          );
+
+          return res.status(401).json({
+            success: false,
+            message:
+              'Session expirée pour inactivité. Veuillez vous reconnecter.',
+            code: 'INACTIVITY_TIMEOUT',
+          });
+        }
+      }
+    }
+
+    // ✅ Mettre à jour la dernière activité (sans bloquer la requête)
+    User.updateOne(
+      { _id: user._id },
+      { $set: { lastActivity: new Date() } }
+    ).catch((err) => logger.error('Erreur update lastActivity:', err));
 
     // ✅ S'assurer que permissions est un tableau
     if (!user.permissions || !Array.isArray(user.permissions)) {
@@ -112,13 +159,61 @@ const requireRefreshToken = async (req, res, next) => {
 };
 
 // ============================================================
+// Middleware de vérification de rôle
+// ============================================================
+const requireRole = (roles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié.',
+      });
+    }
+
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: `Accès refusé. Rôle requis: ${roles.join(' ou ')}`,
+      });
+    }
+
+    next();
+  };
+};
+
+const requireAdmin = requireRole(['ADMIN']);
+const requireAdminOrCommercial = requireRole(['ADMIN', 'COMMERCIAL']);
+const requireAdminOrReparateur = requireRole(['ADMIN', 'REPARATEUR']);
+
+const requireAdminOrSelf = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Utilisateur non authentifié.',
+    });
+  }
+
+  if (req.user.role === 'ADMIN' || req.user.id === req.params.id) {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: 'Accès refusé.',
+  });
+};
+
+// ============================================================
 // ✅ EXPORTS
-// - requireAuth : nom officiel
-// - protect : ALIAS pour compatibilité avec les routes existantes
 // ============================================================
 module.exports = {
   requireAuth,
   requireRefreshToken,
-  protect: requireAuth, // ✅ AJOUT : alias
-  auth: requireAuth,    // ✅ alias optionnel
+  protect: requireAuth,
+  auth: requireAuth,
+  requireRole,
+  requireAdmin,
+  requireAdminOrCommercial,
+  requireAdminOrReparateur,
+  requireAdminOrSelf,
 };

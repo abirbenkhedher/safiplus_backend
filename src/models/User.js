@@ -104,6 +104,9 @@ const userSchema = new mongoose.Schema({
   lastLogin: {
     type: Date,
   },
+  lastActivity: {
+    type: Date,
+  },
   refreshToken: {
     type: String,
     select: false,

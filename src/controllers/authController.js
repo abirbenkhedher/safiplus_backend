@@ -6,19 +6,19 @@ const logger = require('../config/logger');
 // Générer les tokens
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username, role: user.role };
-  
+
   const accessToken = jwt.sign(
     payload,
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
-  
+
   const refreshToken = jwt.sign(
     { id: user._id },
     process.env.JWT_REFRESH_SECRET,
     { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' }
   );
-  
+
   return { accessToken, refreshToken };
 };
 
@@ -37,7 +37,7 @@ const login = async (req, res) => {
     }
 
     const user = await User.findOne({ username }).select('+password');
-    
+
     if (!user) {
       return res.status(401).json({ success: false, message: 'Nom d\'utilisateur ou mot de passe incorrect' });
     }
@@ -51,11 +51,14 @@ const login = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Nom d\'utilisateur ou mot de passe incorrect' });
     }
 
-    user.lastLogin = new Date();
-    await user.save();
+    // ✅ CRUCIAL : réinitialiser lastActivity à chaque login
+    // Sinon le middleware requireAuth détecte une "inactivité" dès la 1ère requête
+    const now = new Date();
+    user.lastLogin = now;
+    user.lastActivity = now; // ✅ AJOUT
 
     const { accessToken, refreshToken } = generateTokens(user);
-    
+
     user.refreshToken = refreshToken;
     await user.save();
 
@@ -85,17 +88,20 @@ const login = async (req, res) => {
 const refreshToken = async (req, res) => {
   try {
     const { refreshToken } = req.body;
-    
+
     if (!refreshToken) {
       return res.status(401).json({ success: false, message: 'Refresh token manquant' });
     }
 
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id);
-    
+    const user = await User.findById(decoded.id).select('+refreshToken');
+
     if (!user || user.refreshToken !== refreshToken) {
       return res.status(401).json({ success: false, message: 'Refresh token invalide' });
     }
+
+    // ✅ Mettre à jour lastActivity lors du refresh
+    user.lastActivity = new Date();
 
     const tokens = generateTokens(user);
     user.refreshToken = tokens.refreshToken;
@@ -114,6 +120,7 @@ const logout = async (req, res) => {
     const user = await User.findById(req.user.id);
     if (user) {
       user.refreshToken = null;
+      // ⚠️ NE PAS toucher à isActive, NE PAS désactiver le compte
       await user.save();
     }
 
@@ -129,12 +136,12 @@ const logout = async (req, res) => {
 const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password -refreshToken');
-    
+
     const userData = user.toObject();
     if (!userData.permissions || !Array.isArray(userData.permissions)) {
       userData.permissions = User.DEFAULT_PERMISSIONS[userData.role] || [];
     }
-    
+
     res.json({ success: true, data: userData });
   } catch (error) {
     logger.error('Erreur getMe:', error);
