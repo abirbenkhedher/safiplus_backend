@@ -57,13 +57,23 @@ const userSchema = new mongoose.Schema({
     maxlength: [30, 'Maximum 30 caractères'],
   },
   email: {
-    type: String,
-    required: [true, 'L\'email est obligatoire'],
-    unique: true,
-    trim: true,
-    lowercase: true,
-    match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Email invalide'],
+  type: String,
+  required: false,
+  unique: true,
+  sparse: true,        // ✅ CRUCIAL pour autoriser plusieurs users sans email
+  trim: true,
+  lowercase: true,
+  default: undefined,  // ✅ évite de stocker "" 
+  validate: {
+    validator: function (v) {
+      // ✅ Si vide → OK (facultatif)
+      if (!v || v.trim() === '') return true;
+      // Sinon → doit respecter le format
+      return /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(v);
+    },
+    message: 'Email invalide',
   },
+},
   phone: {
     type: String,
     trim: true,
