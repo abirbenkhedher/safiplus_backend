@@ -3,33 +3,92 @@ const Client = require('../models/Client');
 const Status = require('../models/Status');
 const Marque = require('../models/Marque');
 const Modele = require('../models/Modele');
+const Panne = require('../models/Panne');   // ✅ AJOUT pour l'enrichissement
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
 
+// ============================================================
+// ✅ HELPER : Échapper les caractères regex
+// ============================================================
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
+// ============================================================
+// ✅ HELPER : Synchroniser les pannes personnalisées avec la base
+// ============================================================
+/**
+ * Pour chaque panne envoyée, vérifie si elle existe dans la catégorie.
+ * Si non, la crée automatiquement avec un ordre élevé (999+) pour
+ * qu'elle apparaisse à la fin de la liste dans le CRUD Pannes.
+ */
+async function syncPannesWithCategories(panneNoms, categorieId) {
+  try {
+    if (!categorieId || !Array.isArray(panneNoms)) return;
+
+    for (const nom of panneNoms) {
+      const trimmed = String(nom).trim();
+      if (!trimmed) continue;
+
+      // ✅ Vérifier si la panne existe déjà (insensible à la casse)
+      const existing = await Panne.findOne({
+        nom: { $regex: `^${escapeRegex(trimmed)}$`, $options: 'i' },
+        categorie: categorieId,
+      });
+
+      if (!existing) {
+        // ✅ Déterminer le prochain ordre
+        const lastPanne = await Panne.findOne({ categorie: categorieId })
+          .sort({ ordre: -1 })
+          .select('ordre');
+
+        const lastOrdre = lastPanne?.ordre ?? 0;
+        const nextOrdre = lastOrdre >= 999 ? lastOrdre + 1 : 999;
+
+        await Panne.create({
+          nom: trimmed,
+          categorie: categorieId,
+          ordre: nextOrdre,
+          isActive: true,
+        });
+
+        logger.info(
+          `✨ Panne personnalisée créée automatiquement: "${trimmed}" (catégorie ${categorieId}, ordre ${nextOrdre})`
+        );
+      }
+    }
+  } catch (error) {
+    // ⚠️ On ne bloque pas la création/modification de la réparation si ça échoue
+    logger.error('Erreur syncPannesWithCategories:', error);
+  }
+}
 
 // ============================================================
 // GET - Liste des réparations avec filtres
 // ============================================================
 exports.getAll = async (req, res) => {
   try {
-  const {
-  search, status, categorie, client, reparateur, createdBy, commercial,
-  dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
-} = req.query;
+    const {
+      search, status, categorie, client, reparateur, createdBy, commercial,
+      dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
+    } = req.query;
+
     const query = { isDeleted: false };
 
     if (status) query.status = status;
     if (categorie) query.categorie = categorie;
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
+
+    // ✅ Filtre par commercial (créateur) — accepte les 2 noms
     if (createdBy) query.createdBy = createdBy;
-else if (commercial) query.createdBy = commercial;
-    // ✅ Filtre ZONE (remplace adresse)
+    else if (commercial) query.createdBy = commercial;
+
+    // ✅ Filtre ZONE
     if (zone && zone.trim() !== '') {
       const clientsWithZone = await Client.find({
-        zone: { $regex: `^${zone}$`, $options: 'i' },   // match exact insensible à la casse
+        zone: { $regex: `^${escapeRegex(zone)}$`, $options: 'i' },
       }).select('_id');
 
       const clientIds = clientsWithZone.map((c) => c._id);
@@ -45,7 +104,7 @@ else if (commercial) query.createdBy = commercial;
       }
     }
 
-    // ✅ Recherche globale multi-champs (inclut zone)
+    // ✅ Recherche globale
     if (search) {
       const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
         Client.find({
@@ -55,7 +114,7 @@ else if (commercial) query.createdBy = commercial;
             { phone2: { $regex: search, $options: 'i' } },
             { code: { $regex: search, $options: 'i' } },
             { adresse: { $regex: search, $options: 'i' } },
-            { zone: { $regex: search, $options: 'i' } },     // ✅ AJOUT
+            { zone: { $regex: search, $options: 'i' } },
           ],
         }).select('_id'),
         Marque.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
@@ -91,7 +150,7 @@ else if (commercial) query.createdBy = commercial;
 
     const [reparations, total] = await Promise.all([
       Reparation.find(query)
-        .populate('client', 'nom phone phone2 email code adresse zone')   // ✅ ajout zone
+        .populate('client', 'nom phone phone2 email code adresse zone')
         .populate('status', 'label color parDefault')
         .populate('categorie', 'nom')
         .populate('objet', 'nom')
@@ -106,16 +165,16 @@ else if (commercial) query.createdBy = commercial;
         .sort(sort)
         .skip(skip)
         .limit(parseInt(limit)),
-      Reparation.countDocuments(query)
+      Reparation.countDocuments(query),
     ]);
 
-    const reparationsWithReste = reparations.map(r => ({
+    const reparationsWithReste = reparations.map((r) => ({
       ...r.toObject(),
       reste: r.prix - r.acompte,
       prixTotal: r.prixTotal,
       resteTotal: r.resteTotal,
       imprevusEnAttente: (r.diagnosticImprevus?.imprevus || [])
-        .filter(i => i.accepte === null || i.accepte === undefined).length,
+        .filter((i) => i.accepte === null || i.accepte === undefined).length,
     }));
 
     res.json({
@@ -124,14 +183,14 @@ else if (commercial) query.createdBy = commercial;
       pagination: {
         total,
         page: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit))
-      }
+        pages: Math.ceil(total / parseInt(limit)),
+      },
     });
   } catch (error) {
     logger.error('Erreur getAll reparations:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération des réparations'
+      message: 'Erreur lors de la récupération des réparations',
     });
   }
 };
@@ -159,7 +218,7 @@ exports.getOne = async (req, res) => {
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({
         success: false,
-        message: 'Réparation non trouvée'
+        message: 'Réparation non trouvée',
       });
     }
 
@@ -170,19 +229,19 @@ exports.getOne = async (req, res) => {
         reste: reparation.prix - reparation.acompte,
         prixTotal: reparation.prixTotal,
         resteTotal: reparation.resteTotal,
-      }
+      },
     });
   } catch (error) {
     logger.error('Erreur getOne reparation:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération de la réparation'
+      message: 'Erreur lors de la récupération de la réparation',
     });
   }
 };
 
 // ============================================================
-// GET - Route PUBLIQUE : Consulter une réparation par numéro (QR Code)
+// GET - Route PUBLIQUE
 // ============================================================
 exports.getPublicByNumero = async (req, res) => {
   try {
@@ -191,7 +250,7 @@ exports.getPublicByNumero = async (req, res) => {
     if (!numero) {
       return res.status(400).json({
         success: false,
-        message: 'Numéro de réparation requis'
+        message: 'Numéro de réparation requis',
       });
     }
 
@@ -207,15 +266,15 @@ exports.getPublicByNumero = async (req, res) => {
     if (!reparation) {
       return res.status(404).json({
         success: false,
-        message: 'Réparation non trouvée'
+        message: 'Réparation non trouvée',
       });
     }
 
     const imprevusAcceptes = (reparation.diagnosticImprevus?.imprevus || [])
-      .filter(i => i.accepte === true);
+      .filter((i) => i.accepte === true);
 
     const imprevusEnAttente = (reparation.diagnosticImprevus?.imprevus || [])
-      .filter(i => i.accepte === null || i.accepte === undefined);
+      .filter((i) => i.accepte === null || i.accepte === undefined);
 
     const totalImprevusAcceptes = imprevusAcceptes
       .reduce((sum, i) => sum + (Number(i.prixSupplementaire) || 0), 0);
@@ -237,7 +296,6 @@ exports.getPublicByNumero = async (req, res) => {
         categorie: reparation.categorie?.nom,
         marque: reparation.marque?.nom || null,
         modele: reparation.modele?.nom || null,
-        // ✅ panneType est maintenant un tableau
         panneType: reparation.panneType || [],
         problemeDeclare: reparation.problemeDeclare,
         status: {
@@ -258,7 +316,7 @@ exports.getPublicByNumero = async (req, res) => {
         acompte: reparation.acompte,
         prixTotal,
         reste,
-        imprevusAcceptes: imprevusAcceptes.map(i => ({
+        imprevusAcceptes: imprevusAcceptes.map((i) => ({
           description: i.description,
           prix: i.prixSupplementaire,
         })),
@@ -266,13 +324,13 @@ exports.getPublicByNumero = async (req, res) => {
         isReparable: reparation.isReparable,
         createdAt: reparation.createdAt,
         updatedAt: reparation.updatedAt,
-      }
+      },
     });
   } catch (error) {
     logger.error('Erreur getPublicByNumero:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération'
+      message: 'Erreur lors de la récupération',
     });
   }
 };
@@ -287,7 +345,7 @@ exports.create = async (req, res) => {
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
-      representant, reparateur, datePrevisionnelle, isReparable, isNotified
+      representant, reparateur, datePrevisionnelle, isReparable, isNotified,
     } = req.body;
 
     const clientExists = await Client.findById(client);
@@ -300,15 +358,14 @@ exports.create = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Statut non trouvé' });
     }
 
-    // ✅ Valider que panneType est un tableau non vide
+    // ✅ Valider panneType
     if (!panneType || !Array.isArray(panneType) || panneType.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Au moins une panne est obligatoire'
+        message: 'Au moins une panne est obligatoire',
       });
     }
 
-    // Nettoyer et filtrer les vides
     const cleanPanneTypes = panneType
       .filter((p) => p && typeof p === 'string' && p.trim() !== '')
       .map((p) => p.trim());
@@ -316,11 +373,11 @@ exports.create = async (req, res) => {
     if (cleanPanneTypes.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Au moins une panne valide est obligatoire'
+        message: 'Au moins une panne valide est obligatoire',
       });
     }
 
-    // ✅ Valider la marque si fournie
+    // ✅ Valider marque
     if (marque) {
       const marqueExists = await Marque.findById(marque);
       if (!marqueExists) {
@@ -328,7 +385,7 @@ exports.create = async (req, res) => {
       }
     }
 
-    // ✅ Valider le modèle si fourni
+    // ✅ Valider modèle
     if (modele) {
       const modeleExists = await Modele.findById(modele);
       if (!modeleExists) {
@@ -344,26 +401,30 @@ exports.create = async (req, res) => {
     else if (finalAcompte > 0 && finalAcompte < finalPrix) finalPaymentType = 'partial';
     else finalPaymentType = 'unpaid';
 
-    const cleanObservations = (observations || []).filter(o => o.text && o.text.trim() !== '');
+    const cleanObservations = (observations || []).filter(
+      (o) => o.text && o.text.trim() !== ''
+    );
 
     const reparation = new Reparation({
       client, categorie, objet,
       marque: marque || null,
       modele: modele || null,
       problemeDeclare,
-      panneType: cleanPanneTypes,   // ✅ Tableau nettoyé
+      panneType: cleanPanneTypes,
       note, observation,
       observations: cleanObservations,
       diagnostic,
       diagnosticImprevus: {
         constat: diagnosticImprevusData?.constat || '',
-        imprevus: (diagnosticImprevusData?.imprevus || []).filter(i => i.description?.trim()),
+        imprevus: (diagnosticImprevusData?.imprevus || []).filter(
+          (i) => i.description?.trim()
+        ),
         decisionClient: {
           statut: diagnosticImprevusData?.decisionClient?.statut || 'en_attente',
           date: diagnosticImprevusData?.decisionClient?.date || null,
           note: diagnosticImprevusData?.decisionClient?.note || '',
           enregistrePar: diagnosticImprevusData?.decisionClient?.enregistrePar || null,
-        }
+        },
       },
       travauxEffectues, piecesUtilisees,
       prix: finalPrix,
@@ -386,6 +447,9 @@ exports.create = async (req, res) => {
     });
 
     await reparation.save();
+
+    // ✅ ENRICHISSEMENT AUTOMATIQUE DES PANNES
+    await syncPannesWithCategories(cleanPanneTypes, categorie);
 
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone phone2 email code adresse')
@@ -411,13 +475,13 @@ exports.create = async (req, res) => {
         reste: populated.prix - populated.acompte,
         prixTotal: populated.prixTotal,
         resteTotal: populated.resteTotal,
-      }
+      },
     });
   } catch (error) {
     logger.error('Erreur create reparation:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Erreur lors de la création de la réparation'
+      message: error.message || 'Erreur lors de la création de la réparation',
     });
   }
 };
@@ -439,7 +503,7 @@ exports.update = async (req, res) => {
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
       representant, reparateur, datePrevisionnelle, isReparable, isNotified,
-      envoyerSMS = false
+      envoyerSMS = false,
     } = req.body;
 
     // ✅ Valider panneType si fourni
@@ -448,7 +512,7 @@ exports.update = async (req, res) => {
       if (!Array.isArray(panneType)) {
         return res.status(400).json({
           success: false,
-          message: 'Le type de panne doit être un tableau'
+          message: 'Le type de panne doit être un tableau',
         });
       }
 
@@ -459,7 +523,7 @@ exports.update = async (req, res) => {
       if (cleanPanneTypes.length === 0) {
         return res.status(400).json({
           success: false,
-          message: 'Au moins une panne est obligatoire'
+          message: 'Au moins une panne est obligatoire',
         });
       }
     }
@@ -471,7 +535,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ✅ Valider la marque si fournie et changée
     if (marque !== undefined && marque !== null && marque !== '') {
       const currentMarqueId = reparation.marque ? reparation.marque.toString() : null;
       if (marque !== currentMarqueId) {
@@ -482,7 +545,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ✅ Valider le modèle si fourni et changé
     if (modele !== undefined && modele !== null && modele !== '') {
       const currentModeleId = reparation.modele ? reparation.modele.toString() : null;
       if (modele !== currentModeleId) {
@@ -499,7 +561,7 @@ exports.update = async (req, res) => {
       marque: reparation.marque,
       modele: reparation.modele,
       problemeDeclare: reparation.problemeDeclare,
-      panneType: [...(reparation.panneType || [])],   // ✅ Copie du tableau
+      panneType: [...(reparation.panneType || [])],
       note: reparation.note,
       observation: reparation.observation,
       observations: reparation.observations,
@@ -521,15 +583,21 @@ exports.update = async (req, res) => {
     reparation.marque = marque !== undefined ? (marque || null) : reparation.marque;
     reparation.modele = modele !== undefined ? (modele || null) : reparation.modele;
     reparation.problemeDeclare = problemeDeclare !== undefined ? problemeDeclare : reparation.problemeDeclare;
-    // ✅ Mettre à jour panneType si fourni
+
+    // ✅ Mettre à jour panneType + synchroniser
     if (cleanPanneTypes !== null) {
       reparation.panneType = cleanPanneTypes;
+      // ✅ ENRICHISSEMENT AUTOMATIQUE DES PANNES
+      await syncPannesWithCategories(cleanPanneTypes, reparation.categorie);
     }
+
     reparation.note = note !== undefined ? note : reparation.note;
     reparation.observation = observation !== undefined ? observation : reparation.observation;
 
     if (observations !== undefined) {
-      reparation.observations = observations.filter(o => o.text && o.text.trim() !== '');
+      reparation.observations = observations.filter(
+        (o) => o.text && o.text.trim() !== ''
+      );
     }
 
     reparation.diagnostic = diagnostic !== undefined ? diagnostic : reparation.diagnostic;
@@ -546,7 +614,9 @@ exports.update = async (req, res) => {
 
     if (diagnosticImprevusData !== undefined) {
       const oldDiag = reparation.diagnosticImprevus || {};
-      const newImprevus = (diagnosticImprevusData.imprevus || []).filter(i => i.description?.trim());
+      const newImprevus = (diagnosticImprevusData.imprevus || []).filter(
+        (i) => i.description?.trim()
+      );
 
       const enrichedImprevus = newImprevus.map((newImp, idx) => {
         const oldImp = oldDiag.imprevus?.[idx];
@@ -583,7 +653,7 @@ exports.update = async (req, res) => {
           enregistrePar: decisionChanged && newDecision.statut !== 'en_attente'
             ? req.user.id
             : (newDecision.enregistrePar || oldDecision.enregistrePar || null),
-        }
+        },
       };
     }
 
@@ -611,7 +681,7 @@ exports.update = async (req, res) => {
 
     const newModifications = [];
 
-    trackedFields.forEach(field => {
+    trackedFields.forEach((field) => {
       if (req.body[field] === undefined) return;
 
       const oldVal = oldValues[field];
@@ -620,18 +690,17 @@ exports.update = async (req, res) => {
       let changed = false;
 
       if (field === 'observations') {
-        const oldStr = JSON.stringify((oldVal || []).map(o => ({ text: o.text || '' })));
-        const newStr = JSON.stringify((newVal || []).map(o => ({ text: o.text || '' })));
+        const oldStr = JSON.stringify((oldVal || []).map((o) => ({ text: o.text || '' })));
+        const newStr = JSON.stringify((newVal || []).map((o) => ({ text: o.text || '' })));
         changed = oldStr !== newStr;
       } else if (field === 'panneType') {
-        // ✅ Comparer les tableaux de pannes (triés pour ignorer l'ordre)
         const oldStr = JSON.stringify([...(oldVal || [])].sort());
         const newStr = JSON.stringify([...(newVal || [])].sort());
         changed = oldStr !== newStr;
       } else if (field === 'diagnosticImprevus') {
         const oldStr = JSON.stringify({
           constat: oldVal?.constat || '',
-          imprevus: (oldVal?.imprevus || []).map(i => ({
+          imprevus: (oldVal?.imprevus || []).map((i) => ({
             description: i.description || '',
             prixSupplementaire: i.prixSupplementaire || 0,
             accepte: i.accepte,
@@ -639,11 +708,11 @@ exports.update = async (req, res) => {
           decisionClient: {
             statut: oldVal?.decisionClient?.statut || 'en_attente',
             note: oldVal?.decisionClient?.note || '',
-          }
+          },
         });
         const newStr = JSON.stringify({
           constat: newVal?.constat || '',
-          imprevus: (newVal?.imprevus || []).map(i => ({
+          imprevus: (newVal?.imprevus || []).map((i) => ({
             description: i.description || '',
             prixSupplementaire: i.prixSupplementaire || 0,
             accepte: i.accepte,
@@ -651,7 +720,7 @@ exports.update = async (req, res) => {
           decisionClient: {
             statut: newVal?.decisionClient?.statut || 'en_attente',
             note: newVal?.decisionClient?.note || '',
-          }
+          },
         });
         changed = oldStr !== newStr;
       } else if (typeof oldVal === 'boolean' || typeof newVal === 'boolean') {
@@ -730,13 +799,13 @@ exports.update = async (req, res) => {
         reste: populated.prix - populated.acompte,
         prixTotal: populated.prixTotal,
         resteTotal: populated.resteTotal,
-      }
+      },
     });
   } catch (error) {
     logger.error('Erreur update reparation:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Erreur lors de la modification de la réparation'
+      message: error.message || 'Erreur lors de la modification de la réparation',
     });
   }
 };
@@ -766,7 +835,7 @@ exports.changeStatus = async (req, res) => {
       if (req.user.role !== 'ADMIN') {
         return res.status(403).json({
           success: false,
-          message: 'Seul un administrateur peut changer un statut terminal'
+          message: 'Seul un administrateur peut changer un statut terminal',
         });
       }
     }
@@ -811,13 +880,13 @@ exports.changeStatus = async (req, res) => {
     res.json({
       success: true,
       message: 'Statut changé avec succès',
-      data: populated
+      data: populated,
     });
   } catch (error) {
     logger.error('Erreur changeStatus:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors du changement de statut'
+      message: 'Erreur lors du changement de statut',
     });
   }
 };
@@ -858,13 +927,13 @@ exports.assignReparateur = async (req, res) => {
     res.json({
       success: true,
       message: 'Réparateur assigné avec succès',
-      data: populated
+      data: populated,
     });
   } catch (error) {
     logger.error('Erreur assignReparateur:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'assignation du réparateur'
+      message: "Erreur lors de l'assignation du réparateur",
     });
   }
 };
@@ -899,13 +968,13 @@ exports.delete = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Réparation supprimée avec succès'
+      message: 'Réparation supprimée avec succès',
     });
   } catch (error) {
     logger.error('Erreur delete reparation:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la suppression de la réparation'
+      message: 'Erreur lors de la suppression de la réparation',
     });
   }
 };
@@ -936,8 +1005,8 @@ exports.generatePDF = async (req, res) => {
       boutiquePhone: process.env.BOUTIQUE_PHONE || 'Tél',
       boutiqueEmail: process.env.BOUTIQUE_EMAIL || '',
       footerMessage: process.env.TICKET_FOOTER || 'Merci de votre confiance!',
-      offsetLeft: parseFloat(req.query.offsetLeft) || 0.2,     // ✅
-      offsetRight: parseFloat(req.query.offsetRight) || 0.2,   // ✅
+      offsetLeft: parseFloat(req.query.offsetLeft) || 0.2,
+      offsetRight: parseFloat(req.query.offsetRight) || 0.2,
     };
 
     const pdfBuffer = await pdfService.generateTicketPDF(reparation, options);
@@ -976,7 +1045,7 @@ exports.getTicketHTML = async (req, res) => {
       boutiqueAddress: process.env.BOUTIQUE_ADDRESS || 'Adresse',
       boutiquePhone: process.env.BOUTIQUE_PHONE || 'Tél',
       boutiqueEmail: process.env.BOUTIQUE_EMAIL || '',
-      footerMessage: process.env.TICKET_FOOTER || 'Merci de votre confiance!'
+      footerMessage: process.env.TICKET_FOOTER || 'Merci de votre confiance!',
     };
 
     const html = await pdfService.generateTicketHTML(reparation, options);
@@ -990,7 +1059,7 @@ exports.getTicketHTML = async (req, res) => {
 };
 
 // ============================================================
-// ✅ DELETE - Supprimer plusieurs réparations
+// DELETE - Supprimer plusieurs réparations
 // ============================================================
 exports.deleteMany = async (req, res) => {
   try {

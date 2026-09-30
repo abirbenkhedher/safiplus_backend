@@ -24,7 +24,17 @@ const panneSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Index composé : une panne est unique par catégorie
-panneSchema.index({ nom: 1, categorie: 1 }, { unique: true });
+// ============================================================
+// ✅ Index composé unique (nom + catégorie) avec collation
+// Insensible à la casse et aux accents pour éviter les doublons
+// type "Écran cassé" / "ecran casse"
+// ============================================================
+panneSchema.index(
+  { nom: 1, categorie: 1 },
+  {
+    unique: true,
+    collation: { locale: 'fr', strength: 2 },
+  }
+);
 
 module.exports = mongoose.model('Panne', panneSchema);
