@@ -5,7 +5,7 @@ const logger = require('../config/logger');
 // ============================================================
 // ✅ CONFIGURATION INACTIVITÉ
 // ============================================================
-const INACTIVITY_LIMIT_MS = 1 * 60 * 1000; // 1 minute (à ajuster : 10 * 60 * 1000 pour 10 min)
+const INACTIVITY_LIMIT_MS = 10 * 60 * 1000; // 1 minute (à ajuster : 10 * 60 * 1000 pour 10 min)
 const AUTO_LOGOUT_ROLES = ['COMMERCIAL'];
 
 // ============================================================
