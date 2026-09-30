@@ -1,7 +1,9 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 
+// ============================================================
 // ✅ Modules disponibles (avec :read pour lecture seule)
+// ============================================================
 const AVAILABLE_MODULES = [
   'dashboard',
   'clients',
@@ -14,18 +16,25 @@ const AVAILABLE_MODULES = [
   'objets',
   'objets:read',
   'statuses',
-  'marques',    // ✅ Ajouter
-    'modeles',    // ✅ Ajoute
-    //   'statuses:read',
+  'statuses:read',
+  'marques',
+  'marques:read',
+  'modeles',
+  'modeles:read',
+  'pannes',           // ✅ AJOUT
+  'pannes:read',      // ✅ AJOUT
   'users',
   'history',
 ];
 
+// ============================================================
 // ✅ Permissions par défaut
+// ============================================================
 const DEFAULT_PERMISSIONS = {
   ADMIN: [
     'dashboard', 'clients', 'reparations', 'paiements',
     'familles', 'categories', 'objets', 'statuses',
+    'marques', 'modeles', 'pannes',              // ✅ AJOUT
     'users', 'history',
   ],
   COMMERCIAL: [
@@ -37,6 +46,10 @@ const DEFAULT_PERMISSIONS = {
     'objets:read',
     'statuses:read',
     'familles:read',
+    'marques:read',        // ✅ AJOUT
+    'modeles:read',        // ✅ AJOUT
+    'pannes',              // ✅ AJOUT : accès complet
+    'pannes:read',         // ✅ AJOUT : lecture
   ],
   REPARATEUR: [
     'dashboard',
@@ -44,6 +57,10 @@ const DEFAULT_PERMISSIONS = {
     'categories:read',
     'objets:read',
     'statuses:read',
+    'marques:read',        // ✅ AJOUT
+    'modeles:read',        // ✅ AJOUT
+    'pannes',              // ✅ AJOUT : accès complet
+    'pannes:read',         // ✅ AJOUT : lecture
   ],
 };
 
@@ -57,23 +74,21 @@ const userSchema = new mongoose.Schema({
     maxlength: [30, 'Maximum 30 caractères'],
   },
   email: {
-  type: String,
-  required: false,
-  unique: true,
-  sparse: true,        // ✅ CRUCIAL pour autoriser plusieurs users sans email
-  trim: true,
-  lowercase: true,
-  default: undefined,  // ✅ évite de stocker "" 
-  validate: {
-    validator: function (v) {
-      // ✅ Si vide → OK (facultatif)
-      if (!v || v.trim() === '') return true;
-      // Sinon → doit respecter le format
-      return /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(v);
+    type: String,
+    required: false,
+    unique: true,
+    sparse: true,
+    trim: true,
+    lowercase: true,
+    default: undefined,
+    validate: {
+      validator: function (v) {
+        if (!v || v.trim() === '') return true;
+        return /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(v);
+      },
+      message: 'Email invalide',
     },
-    message: 'Email invalide',
   },
-},
   phone: {
     type: String,
     trim: true,
@@ -150,11 +165,10 @@ userSchema.methods.hasAnyRole = function (roles) {
   return roles.includes(this.role);
 };
 
-// ✅ Vérifier une permission (accepte aussi la version :read)
+// ✅ Vérifier une permission
 userSchema.methods.hasPermission = function (module) {
   if (this.role === 'ADMIN') return true;
   if (this.permissions.includes(module)) return true;
-  // Si on demande "categories" et qu'on a "categories:read", on refuse l'écriture
   return false;
 };
 

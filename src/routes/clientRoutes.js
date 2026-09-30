@@ -1,18 +1,25 @@
 const express = require('express');
 const router = express.Router();
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const clientController = require('../controllers/clientController');
 
-// ✅ Route de suppression multiple (AVANT /:id)
+// ============================================================
+// ✅ SUPPRESSION MULTIPLE — ADMIN uniquement
+// (avant /:id pour éviter le conflit de route)
+// ============================================================
 router.delete(
   '/many',
   requireAuth,
+  requireAdmin,                              // ✅ AJOUT
   requirePermission('clients'),
   clientController.deleteMany
 );
 
-// ✅ Route de recherche par téléphone/code fidélité (AVANT /:id)
+// ============================================================
+// ✅ RECHERCHE par téléphone / code fidélité
+// (avant /:id pour éviter le conflit de route)
+// ============================================================
 router.get(
   '/search/phone',
   requireAuth,
@@ -20,7 +27,9 @@ router.get(
   clientController.findByPhone
 );
 
-// Routes CRUD
+// ============================================================
+// ✅ ROUTES CRUD
+// ============================================================
 router.get(
   '/',
   requireAuth,
@@ -49,9 +58,13 @@ router.put(
   clientController.update
 );
 
+// ============================================================
+// ✅ SUPPRESSION SIMPLE — ADMIN uniquement
+// ============================================================
 router.delete(
   '/:id',
   requireAuth,
+  requireAdmin,                              // ✅ AJOUT
   requirePermission('clients'),
   clientController.delete
 );

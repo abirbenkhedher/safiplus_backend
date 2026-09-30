@@ -14,11 +14,10 @@ const smsService = require('../services/smsService');
 // ============================================================
 exports.getAll = async (req, res) => {
   try {
-    const {
-      search, status, categorie, client, reparateur, createdBy,
-      dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
-    } = req.query;
-
+  const {
+  search, status, categorie, client, reparateur, createdBy, commercial,
+  dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
+} = req.query;
     const query = { isDeleted: false };
 
     if (status) query.status = status;
@@ -26,7 +25,7 @@ exports.getAll = async (req, res) => {
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
-
+else if (commercial) query.createdBy = commercial;
     // ✅ Filtre ZONE (remplace adresse)
     if (zone && zone.trim() !== '') {
       const clientsWithZone = await Client.find({
