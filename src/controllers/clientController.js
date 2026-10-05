@@ -104,6 +104,8 @@ exports.getOne = async (req, res) => {
       .populate('status', 'label color')
       .populate('objet', 'nom')
       .populate('categorie', 'nom')
+      .populate('marque', 'nom')   // ✅ AJOUT
+      .populate('modele', 'nom')   // ✅ AJOUT
       .sort({ createdAt: -1 });
 
     const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
