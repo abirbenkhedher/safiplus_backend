@@ -3,7 +3,8 @@ const Client = require('../models/Client');
 const Status = require('../models/Status');
 const Marque = require('../models/Marque');
 const Modele = require('../models/Modele');
-const Panne = require('../models/Panne');   // ✅ AJOUT pour l'enrichissement
+const Panne = require('../models/Panne');
+const Categorie = require('../models/Categorie');   // ✅ AJOUT
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
@@ -18,11 +19,6 @@ function escapeRegex(str) {
 // ============================================================
 // ✅ HELPER : Synchroniser les pannes personnalisées avec la base
 // ============================================================
-/**
- * Pour chaque panne envoyée, vérifie si elle existe dans la catégorie.
- * Si non, la crée automatiquement avec un ordre élevé (999+) pour
- * qu'elle apparaisse à la fin de la liste dans le CRUD Pannes.
- */
 async function syncPannesWithCategories(panneNoms, categorieId) {
   try {
     if (!categorieId || !Array.isArray(panneNoms)) return;
@@ -31,14 +27,12 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
       const trimmed = String(nom).trim();
       if (!trimmed) continue;
 
-      // ✅ Vérifier si la panne existe déjà (insensible à la casse)
       const existing = await Panne.findOne({
         nom: { $regex: `^${escapeRegex(trimmed)}$`, $options: 'i' },
         categorie: categorieId,
       });
 
       if (!existing) {
-        // ✅ Déterminer le prochain ordre
         const lastPanne = await Panne.findOne({ categorie: categorieId })
           .sort({ ordre: -1 })
           .select('ordre');
@@ -59,7 +53,6 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
       }
     }
   } catch (error) {
-    // ⚠️ On ne bloque pas la création/modification de la réparation si ça échoue
     logger.error('Erreur syncPannesWithCategories:', error);
   }
 }
@@ -71,19 +64,65 @@ exports.getAll = async (req, res) => {
   try {
     const {
       search, status, categorie, client, reparateur, createdBy, commercial,
+      famille,
       dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
     } = req.query;
 
     const query = { isDeleted: false };
 
     if (status) query.status = status;
-    if (categorie) query.categorie = categorie;
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
 
     // ✅ Filtre par commercial (créateur) — accepte les 2 noms
     if (createdBy) query.createdBy = createdBy;
     else if (commercial) query.createdBy = commercial;
+
+    // ============================================================
+    // ✅ NOUVEAU : Filtre FAMILLE + CATÉGORIE combinés
+    // ============================================================
+    if (famille && famille.trim() !== '') {
+      // Récupérer les catégories appartenant à cette famille
+      const categoriesDeLaFamille = await Categorie.find({
+        famille: famille,
+      }).select('_id');
+
+      const categorieIdsDeLaFamille = categoriesDeLaFamille.map((c) => c._id);
+
+      // ✅ CAS 1 : Famille + Catégorie → filtre strict sur la catégorie
+      if (categorie) {
+        const appartientALaFamille = categorieIdsDeLaFamille.some(
+          (id) => String(id) === String(categorie)
+        );
+
+        if (appartientALaFamille) {
+          query.categorie = categorie;   // ✅ Uniquement la catégorie sélectionnée
+        } else {
+          // La catégorie ne fait pas partie de la famille → aucun résultat
+          return res.json({
+            success: true,
+            data: [],
+            pagination: { total: 0, page: 1, pages: 0 },
+          });
+        }
+      }
+      // ✅ CAS 2 : Famille seule → toutes les catégories de la famille
+      else {
+        if (categorieIdsDeLaFamille.length > 0) {
+          query.categorie = { $in: categorieIdsDeLaFamille };
+        } else {
+          return res.json({
+            success: true,
+            data: [],
+            pagination: { total: 0, page: 1, pages: 0 },
+          });
+        }
+      }
+    }
+    // ✅ CAS 3 : Catégorie seule (sans famille)
+    else if (categorie) {
+      query.categorie = categorie;
+    }
 
     // ✅ Filtre ZONE
     if (zone && zone.trim() !== '') {
@@ -358,7 +397,6 @@ exports.create = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Statut non trouvé' });
     }
 
-    // ✅ Valider panneType
     if (!panneType || !Array.isArray(panneType) || panneType.length === 0) {
       return res.status(400).json({
         success: false,
@@ -377,7 +415,6 @@ exports.create = async (req, res) => {
       });
     }
 
-    // ✅ Valider marque
     if (marque) {
       const marqueExists = await Marque.findById(marque);
       if (!marqueExists) {
@@ -385,7 +422,6 @@ exports.create = async (req, res) => {
       }
     }
 
-    // ✅ Valider modèle
     if (modele) {
       const modeleExists = await Modele.findById(modele);
       if (!modeleExists) {
@@ -448,7 +484,6 @@ exports.create = async (req, res) => {
 
     await reparation.save();
 
-    // ✅ ENRICHISSEMENT AUTOMATIQUE DES PANNES
     await syncPannesWithCategories(cleanPanneTypes, categorie);
 
     const populated = await Reparation.findById(reparation._id)
@@ -506,7 +541,6 @@ exports.update = async (req, res) => {
       envoyerSMS = false,
     } = req.body;
 
-    // ✅ Valider panneType si fourni
     let cleanPanneTypes = null;
     if (panneType !== undefined) {
       if (!Array.isArray(panneType)) {
@@ -584,10 +618,8 @@ exports.update = async (req, res) => {
     reparation.modele = modele !== undefined ? (modele || null) : reparation.modele;
     reparation.problemeDeclare = problemeDeclare !== undefined ? problemeDeclare : reparation.problemeDeclare;
 
-    // ✅ Mettre à jour panneType + synchroniser
     if (cleanPanneTypes !== null) {
       reparation.panneType = cleanPanneTypes;
-      // ✅ ENRICHISSEMENT AUTOMATIQUE DES PANNES
       await syncPannesWithCategories(cleanPanneTypes, reparation.categorie);
     }
 
@@ -1077,9 +1109,6 @@ exports.deleteMany = async (req, res) => {
       {
         $set: {
           isDeleted: true,
-          modifications: {
-            // optionnel : on peut logger le soft delete
-          },
         },
       }
     );

@@ -24,31 +24,31 @@ const reparationSchema = new mongoose.Schema({
     required: [true, 'L\'objet est obligatoire']
   },
   marque: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: 'Marque',
-  required: [true, 'La marque est obligatoire']
-},
-modele: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: 'Modele',
-  // Optionnel : required si vous voulez forcer
-},
- 
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Marque',
+    required: [true, 'La marque est obligatoire']
+  },
+  modele: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Modele',
+    // Optionnel : required si vous voulez forcer
+  },
+
   accessoires: {
     type: String,
     trim: true
   },
   panneType: {
-  type: [String],
-  required: [true, 'Le type de panne est obligatoire'],
-  validate: {
-    validator: function(arr) {
-      return Array.isArray(arr) && arr.length > 0;
+    type: [String],
+    required: [true, 'Le type de panne est obligatoire'],
+    validate: {
+      validator: function (arr) {
+        return Array.isArray(arr) && arr.length > 0;
+      },
+      message: 'Au moins une panne est obligatoire'
     },
-    message: 'Au moins une panne est obligatoire'
+    default: []
   },
-  default: []
-},
   problemeDeclare: {
     type: String,
     trim: true,
@@ -202,7 +202,6 @@ modele: {
     statut: {
       type: String,
       required: true,
-      // Le libellé du statut au moment de l'envoi (ex: "Réparé")
     },
     statutId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -211,22 +210,18 @@ modele: {
     message: {
       type: String,
       required: true,
-      // Contenu du SMS envoyé
     },
     telephone: {
       type: String,
       required: true,
-      // Numéro destinataire au format E.164
     },
     clientNom: {
       type: String,
-      // Nom du client (snapshot)
     },
     envoyePar: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      // Qui a déclenché l'envoi
     },
     envoyeLe: {
       type: Date,
@@ -240,7 +235,6 @@ modele: {
     erreur: {
       type: String,
       default: null,
-      // Message d'erreur si échec
     },
   }],
 
@@ -261,26 +255,39 @@ modele: {
   toObject: { virtuals: true }
 });
 
-// Virtual pour le reste à payer
-reparationSchema.virtual('reste').get(function() {
-  return Math.max(0, this.prix - this.acompte);
+// ============================================================
+// ✅ HELPER : Calcul du prix total (prix de base + imprévus acceptés)
+// ============================================================
+function computePrixTotal(doc) {
+  const imprevusAcceptes = (doc.diagnosticImprevus?.imprevus || [])
+    .filter((i) => i.accepte === true)
+    .reduce((sum, i) => sum + (Number(i.prixSupplementaire) || 0), 0);
+  return (Number(doc.prix) || 0) + imprevusAcceptes;
+}
+
+// ============================================================
+// VIRTUALS
+// ============================================================
+
+// ✅ Virtual : prix total (initial + imprévus acceptés)
+reparationSchema.virtual('prixTotal').get(function () {
+  return computePrixTotal(this);
 });
 
-// ✅ Virtual pour le prix total (initial + imprévus acceptés)
-reparationSchema.virtual('prixTotal').get(function() {
-  const imprevusAcceptes = (this.diagnosticImprevus?.imprevus || [])
-    .filter(i => i.accepte === true)
-    .reduce((sum, i) => sum + (i.prixSupplementaire || 0), 0);
-  return (this.prix || 0) + imprevusAcceptes;
+// ✅ Virtual : reste à payer (sur PRIX TOTAL)
+reparationSchema.virtual('reste').get(function () {
+  return Math.max(0, computePrixTotal(this) - (Number(this.acompte) || 0));
 });
 
-// ✅ Virtual pour le reste total
-reparationSchema.virtual('resteTotal').get(function() {
-  return Math.max(0, this.prixTotal - (this.acompte || 0));
+// ✅ Virtual (alias) : reste total (pour compatibilité)
+reparationSchema.virtual('resteTotal').get(function () {
+  return Math.max(0, computePrixTotal(this) - (Number(this.acompte) || 0));
 });
 
-// Middleware pour générer le numéro de réparation
-reparationSchema.pre('validate', async function() {
+// ============================================================
+// MIDDLEWARE : Génération du numéro de réparation
+// ============================================================
+reparationSchema.pre('validate', async function () {
   if (this.isNew && !this.numero) {
     try {
       const year = new Date().getFullYear();
@@ -296,10 +303,35 @@ reparationSchema.pre('validate', async function() {
   }
 });
 
-// Validation que l'acompte ne dépasse pas le prix
-reparationSchema.pre('validate', function() {
-  if (this.acompte > this.prix) {
-    throw new Error('L\'acompte ne peut pas dépasser le prix');
+// ============================================================
+// ✅ VALIDATION CORRIGÉE : l'acompte ne dépasse pas le PRIX TOTAL
+//    (prix de base + imprévus acceptés)
+// ============================================================
+reparationSchema.pre('validate', function () {
+  const prixTotal = computePrixTotal(this);
+  const acompte = Number(this.acompte) || 0;
+
+  if (acompte > prixTotal) {
+    throw new Error(
+      `L'acompte (${acompte.toFixed(2)} DT) ne peut pas dépasser le prix total (${prixTotal.toFixed(2)} DT)`
+    );
+  }
+});
+
+// ============================================================
+// ✅ VALIDATION AUTO : synchronisation du paymentType
+//    (au cas où le frontend ne l'envoie pas correctement)
+// ============================================================
+reparationSchema.pre('validate', function () {
+  const prixTotal = computePrixTotal(this);
+  const acompte = Number(this.acompte) || 0;
+
+  if (acompte <= 0) {
+    this.paymentType = 'unpaid';
+  } else if (prixTotal > 0 && acompte >= prixTotal) {
+    this.paymentType = 'paid';
+  } else {
+    this.paymentType = 'partial';
   }
 });
 
