@@ -4,7 +4,7 @@ const Status = require('../models/Status');
 const Marque = require('../models/Marque');
 const Modele = require('../models/Modele');
 const Panne = require('../models/Panne');
-const Categorie = require('../models/Categorie');   // ✅ AJOUT
+const Categorie = require('../models/Categorie');
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
@@ -74,40 +74,34 @@ exports.getAll = async (req, res) => {
     if (client) query.client = client;
     if (reparateur) query.reparateur = reparateur;
 
-    // ✅ Filtre par commercial (créateur) — accepte les 2 noms
     if (createdBy) query.createdBy = createdBy;
     else if (commercial) query.createdBy = commercial;
 
     // ============================================================
-    // ✅ NOUVEAU : Filtre FAMILLE + CATÉGORIE combinés
+    // ✅ Filtre FAMILLE + CATÉGORIE combinés
     // ============================================================
     if (famille && famille.trim() !== '') {
-      // Récupérer les catégories appartenant à cette famille
       const categoriesDeLaFamille = await Categorie.find({
         famille: famille,
       }).select('_id');
 
       const categorieIdsDeLaFamille = categoriesDeLaFamille.map((c) => c._id);
 
-      // ✅ CAS 1 : Famille + Catégorie → filtre strict sur la catégorie
       if (categorie) {
         const appartientALaFamille = categorieIdsDeLaFamille.some(
           (id) => String(id) === String(categorie)
         );
 
         if (appartientALaFamille) {
-          query.categorie = categorie;   // ✅ Uniquement la catégorie sélectionnée
+          query.categorie = categorie;
         } else {
-          // La catégorie ne fait pas partie de la famille → aucun résultat
           return res.json({
             success: true,
             data: [],
             pagination: { total: 0, page: 1, pages: 0 },
           });
         }
-      }
-      // ✅ CAS 2 : Famille seule → toutes les catégories de la famille
-      else {
+      } else {
         if (categorieIdsDeLaFamille.length > 0) {
           query.categorie = { $in: categorieIdsDeLaFamille };
         } else {
@@ -118,9 +112,7 @@ exports.getAll = async (req, res) => {
           });
         }
       }
-    }
-    // ✅ CAS 3 : Catégorie seule (sans famille)
-    else if (categorie) {
+    } else if (categorie) {
       query.categorie = categorie;
     }
 
@@ -191,7 +183,15 @@ exports.getAll = async (req, res) => {
       Reparation.find(query)
         .populate('client', 'nom phone phone2 email code adresse zone')
         .populate('status', 'label color parDefault')
-        .populate('categorie', 'nom')
+        // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
+        .populate({
+          path: 'categorie',
+          select: 'nom famille reparateurs',
+          populate: {
+            path: 'reparateurs',
+            select: 'firstName lastName username role',
+          },
+        })
         .populate('objet', 'nom')
         .populate('marque', 'nom')
         .populate('modele', 'nom')
@@ -242,7 +242,15 @@ exports.getOne = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color parDefault')
-      .populate('categorie', 'nom')
+      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
+      .populate({
+        path: 'categorie',
+        select: 'nom famille reparateurs',
+        populate: {
+          path: 'reparateurs',
+          select: 'firstName lastName username role',
+        },
+      })
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
@@ -296,7 +304,7 @@ exports.getPublicByNumero = async (req, res) => {
     const reparation = await Reparation.findOne({ numero, isDeleted: false })
       .populate('client', 'nom phone phone2 adresse')
       .populate('status', 'label color')
-      .populate('categorie', 'nom')
+      .populate('categorie', 'nom')   // ← pas besoin des reparateurs ici (route publique)
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
@@ -489,7 +497,15 @@ exports.create = async (req, res) => {
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      .populate('categorie', 'nom')
+      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
+      .populate({
+        path: 'categorie',
+        select: 'nom famille reparateurs',
+        populate: {
+          path: 'reparateurs',
+          select: 'firstName lastName username role',
+        },
+      })
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
@@ -809,7 +825,15 @@ exports.update = async (req, res) => {
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      .populate('categorie', 'nom')
+      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
+      .populate({
+        path: 'categorie',
+        select: 'nom famille reparateurs',
+        populate: {
+          path: 'reparateurs',
+          select: 'firstName lastName username role',
+        },
+      })
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
@@ -1019,7 +1043,15 @@ exports.generatePDF = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      .populate('categorie', 'nom')
+      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
+      .populate({
+        path: 'categorie',
+        select: 'nom famille reparateurs',
+        populate: {
+          path: 'reparateurs',
+          select: 'firstName lastName username role',
+        },
+      })
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
@@ -1060,7 +1092,15 @@ exports.getTicketHTML = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      .populate('categorie', 'nom')
+      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
+      .populate({
+        path: 'categorie',
+        select: 'nom famille reparateurs',
+        populate: {
+          path: 'reparateurs',
+          select: 'firstName lastName username role',
+        },
+      })
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')

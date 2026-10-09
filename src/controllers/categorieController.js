@@ -17,6 +17,7 @@ exports.getAll = async (req, res) => {
     // ✅ Tri par ordre croissant, puis par nom
     const categories = await Categorie.find(filter)
       .populate('famille', 'nom')
+      .populate('reparateurs', 'firstName lastName username role')   // ✅ AJOUT
       .sort({ ordre: 1, nom: 1 });
 
     res.json({
@@ -37,7 +38,10 @@ exports.getAll = async (req, res) => {
 // ============================================================
 exports.getOne = async (req, res) => {
   try {
-    const categorie = await Categorie.findById(req.params.id).populate('famille', 'nom');
+    const categorie = await Categorie.findById(req.params.id)
+      .populate('famille', 'nom')
+      .populate('reparateurs', 'firstName lastName username role');   // ✅ AJOUT
+
     if (!categorie) {
       return res.status(404).json({
         success: false,
@@ -62,7 +66,7 @@ exports.getOne = async (req, res) => {
 // ============================================================
 exports.create = async (req, res) => {
   try {
-    const { nom, famille, ordre } = req.body;
+    const { nom, famille, ordre, reparateurs } = req.body;   // ✅ AJOUT reparateurs
 
     // ✅ Validation du nom
     if (!nom || !nom.trim()) {
@@ -118,17 +122,25 @@ exports.create = async (req, res) => {
       finalOrdre = numOrdre;
     }
 
+    // ✅ Validation des réparateurs (tableau d'ObjectId)
+    const cleanReparateurs = Array.isArray(reparateurs)
+      ? reparateurs.filter((id) => id)   // retire null/undefined
+      : [];
+
     const categorie = new Categorie({
       nom: trimmedNom,
       famille,
       ordre: finalOrdre,
+      reparateurs: cleanReparateurs,   // ✅ AJOUT
     });
 
     await categorie.save();
 
-    const populated = await Categorie.findById(categorie._id).populate('famille', 'nom');
+    const populated = await Categorie.findById(categorie._id)
+      .populate('famille', 'nom')
+      .populate('reparateurs', 'firstName lastName username role');   // ✅ AJOUT
 
-    logger.info(`Catégorie créée: ${trimmedNom} (ordre: ${finalOrdre}) dans famille ${familleExists.nom} par ${req.user.username}`);
+    logger.info(`Catégorie créée: ${trimmedNom} (ordre: ${finalOrdre}, ${cleanReparateurs.length} réparateur(s)) dans famille ${familleExists.nom} par ${req.user.username}`);
 
     res.status(201).json({
       success: true,
@@ -164,7 +176,7 @@ exports.create = async (req, res) => {
 // ============================================================
 exports.update = async (req, res) => {
   try {
-    const { nom, famille, ordre } = req.body;
+    const { nom, famille, ordre, reparateurs } = req.body;   // ✅ AJOUT reparateurs
     const categorie = await Categorie.findById(req.params.id);
 
     if (!categorie) {
@@ -249,11 +261,21 @@ exports.update = async (req, res) => {
       categorie.ordre = numOrdre;
     }
 
+    // ✅ Mettre à jour les réparateurs autorisés
+    if (reparateurs !== undefined) {
+      const cleanReparateurs = Array.isArray(reparateurs)
+        ? reparateurs.filter((id) => id)
+        : [];
+      categorie.reparateurs = cleanReparateurs;
+    }
+
     await categorie.save();
 
-    const populated = await Categorie.findById(categorie._id).populate('famille', 'nom');
+    const populated = await Categorie.findById(categorie._id)
+      .populate('famille', 'nom')
+      .populate('reparateurs', 'firstName lastName username role');   // ✅ AJOUT
 
-    logger.info(`Catégorie modifiée: ${categorie.nom} (ordre: ${categorie.ordre}) par ${req.user.username}`);
+    logger.info(`Catégorie modifiée: ${categorie.nom} (ordre: ${categorie.ordre}, ${categorie.reparateurs.length} réparateur(s)) par ${req.user.username}`);
 
     res.json({
       success: true,

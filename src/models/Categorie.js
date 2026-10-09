@@ -17,6 +17,16 @@ const categorieSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'L\'ordre ne peut pas être négatif'],
   },
+  // ============================================================
+  // ✅ NOUVEAU : Réparateurs autorisés pour cette catégorie
+  //    - [] (vide) = aucune restriction → tous les réparateurs
+  //    - [id1, id2] = uniquement ces réparateurs
+  // ============================================================
+  reparateurs: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: [],
+  }],
 }, {
   timestamps: true
 });
