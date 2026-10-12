@@ -183,7 +183,6 @@ exports.getAll = async (req, res) => {
       Reparation.find(query)
         .populate('client', 'nom phone phone2 email code adresse zone')
         .populate('status', 'label color parDefault')
-        // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
         .populate({
           path: 'categorie',
           select: 'nom famille reparateurs',
@@ -242,7 +241,6 @@ exports.getOne = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color parDefault')
-      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
       .populate({
         path: 'categorie',
         select: 'nom famille reparateurs',
@@ -304,7 +302,7 @@ exports.getPublicByNumero = async (req, res) => {
     const reparation = await Reparation.findOne({ numero, isDeleted: false })
       .populate('client', 'nom phone phone2 adresse')
       .populate('status', 'label color')
-      .populate('categorie', 'nom')   // ← pas besoin des reparateurs ici (route publique)
+      .populate('categorie', 'nom')
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
@@ -497,7 +495,6 @@ exports.create = async (req, res) => {
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
       .populate({
         path: 'categorie',
         select: 'nom famille reparateurs',
@@ -549,6 +546,7 @@ exports.update = async (req, res) => {
     }
 
     const {
+      client,
       categorie, objet, marque, modele,
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
@@ -556,6 +554,23 @@ exports.update = async (req, res) => {
       representant, reparateur, datePrevisionnelle, isReparable, isNotified,
       envoyerSMS = false,
     } = req.body;
+
+    // ============================================================
+    // ✅ VALIDATION : nouveau client (si fourni et différent)
+    // ============================================================
+    if (client !== undefined && client !== null && client !== '') {
+      const currentClientId = reparation.client ? reparation.client.toString() : null;
+
+      if (client !== currentClientId) {
+        const clientExists = await Client.findById(client);
+        if (!clientExists) {
+          return res.status(400).json({
+            success: false,
+            message: 'Client non trouvé',
+          });
+        }
+      }
+    }
 
     let cleanPanneTypes = null;
     if (panneType !== undefined) {
@@ -606,6 +621,7 @@ exports.update = async (req, res) => {
     }
 
     const oldValues = {
+      client: reparation.client,
       categorie: reparation.categorie,
       objet: reparation.objet,
       marque: reparation.marque,
@@ -627,6 +643,11 @@ exports.update = async (req, res) => {
       isReparable: reparation.isReparable,
       isNotified: reparation.isNotified,
     };
+
+    // ✅ AJOUT : assigner le nouveau client
+    if (client !== undefined && client !== null && client !== '') {
+      reparation.client = client;
+    }
 
     reparation.categorie = categorie || reparation.categorie;
     reparation.objet = objet || reparation.objet;
@@ -719,6 +740,7 @@ exports.update = async (req, res) => {
     }
 
     const trackedFields = [
+      'client',
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
       'datePrevisionnelle',
@@ -825,7 +847,6 @@ exports.update = async (req, res) => {
     const populated = await Reparation.findById(reparation._id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
       .populate({
         path: 'categorie',
         select: 'nom famille reparateurs',
@@ -1043,7 +1064,6 @@ exports.generatePDF = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
       .populate({
         path: 'categorie',
         select: 'nom famille reparateurs',
@@ -1092,7 +1112,6 @@ exports.getTicketHTML = async (req, res) => {
     const reparation = await Reparation.findById(req.params.id)
       .populate('client', 'nom phone phone2 email code adresse')
       .populate('status', 'label color')
-      // ✅ MODIFIÉ : populate catégorie avec reparateurs imbriqués
       .populate({
         path: 'categorie',
         select: 'nom famille reparateurs',

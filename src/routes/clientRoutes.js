@@ -11,9 +11,20 @@ const clientController = require('../controllers/clientController');
 router.delete(
   '/many',
   requireAuth,
-  requireAdmin,                              // ✅ AJOUT
+  requireAdmin,
   requirePermission('clients'),
   clientController.deleteMany
+);
+
+// ============================================================
+// ✅ CLIENTS PASSAGERS — numéro 00000000
+// (avant /:id pour éviter le conflit de route)
+// ============================================================
+router.get(
+  '/passengers',
+  requireAuth,
+  requirePermission('clients'),
+  clientController.getPassengers
 );
 
 // ============================================================
@@ -64,7 +75,7 @@ router.put(
 router.delete(
   '/:id',
   requireAuth,
-  requireAdmin,                              // ✅ AJOUT
+  requireAdmin,
   requirePermission('clients'),
   clientController.delete
 );

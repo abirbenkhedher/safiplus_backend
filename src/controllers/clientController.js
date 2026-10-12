@@ -22,6 +22,12 @@ const isDefaultPhone = (phone) => {
 exports.getAll = async (req, res) => {
   try {
     const { search, isActive, limit = 100, page = 1 } = req.query;
+
+    // ✅ Plafonner la limite à 10000 pour éviter les abus tout en
+    //    permettant de charger TOUS les clients si nécessaire
+    const safeLimit = Math.min(Math.max(parseInt(limit) || 100, 1), 10000);
+    const safePage = Math.max(parseInt(page) || 1, 1);
+
     const query = {};
 
     if (isActive !== undefined) {
@@ -32,13 +38,13 @@ exports.getAll = async (req, res) => {
       query.$text = { $search: search };
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const skip = (safePage - 1) * safeLimit;
 
     const [clients, total] = await Promise.all([
       Client.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(parseInt(limit)),
+        .limit(safeLimit),
       Client.countDocuments(query),
     ]);
 
@@ -71,8 +77,9 @@ exports.getAll = async (req, res) => {
       data: clientsWithStats,
       pagination: {
         total,
-        page: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit)),
+        page: safePage,
+        limit: safeLimit,
+        pages: Math.ceil(total / safeLimit),
       },
     });
   } catch (error) {
@@ -80,6 +87,29 @@ exports.getAll = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des clients',
+    });
+  }
+};
+
+// ============================================================
+// ✅ GET - Clients passagers (numéro 00000000)
+// ============================================================
+exports.getPassengers = async (req, res) => {
+  try {
+    const passengers = await Client.find({
+      phone: DEFAULT_PHONE,
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: passengers,
+      count: passengers.length,
+    });
+  } catch (error) {
+    logger.error('Erreur getPassengers:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des clients passagers',
     });
   }
 };
@@ -104,8 +134,8 @@ exports.getOne = async (req, res) => {
       .populate('status', 'label color')
       .populate('objet', 'nom')
       .populate('categorie', 'nom')
-      .populate('marque', 'nom')   // ✅ AJOUT
-      .populate('modele', 'nom')   // ✅ AJOUT
+      .populate('marque', 'nom')
+      .populate('modele', 'nom')
       .sort({ createdAt: -1 });
 
     const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
@@ -353,11 +383,18 @@ exports.findByPhone = async (req, res) => {
 
     const cleanPhone = input.replace(/[^0-9]/g, '');
 
+    // ✅ Si c'est le numéro passager, retourner TOUS les clients passagers
     if (cleanPhone === DEFAULT_PHONE) {
+      const passengers = await Client.find({
+        phone: DEFAULT_PHONE,
+      }).sort({ createdAt: -1 });
+
       return res.json({
         success: true,
-        data: null,
-        exists: false,
+        data: passengers,
+        exists: passengers.length > 0,
+        isPassenger: true,
+        count: passengers.length,
       });
     }
 
@@ -417,7 +454,6 @@ exports.delete = async (req, res) => {
       });
     }
 
-    // ✅ Compter et supprimer en cascade (soft delete) les réparations
     const reparationsCount = await Reparation.countDocuments({
       client: client._id,
       isDeleted: false,
@@ -471,7 +507,6 @@ exports.deleteMany = async (req, res) => {
       });
     }
 
-    // Vérifier que les clients existent
     const clients = await Client.find({ _id: { $in: ids } });
     const validIds = clients.map((c) => c._id);
 
@@ -482,13 +517,11 @@ exports.deleteMany = async (req, res) => {
       });
     }
 
-    // ✅ Supprimer en cascade les réparations (soft delete)
     const reparationsResult = await Reparation.updateMany(
       { client: { $in: validIds }, isDeleted: false },
       { $set: { isDeleted: true } }
     );
 
-    // Supprimer les clients
     const result = await Client.deleteMany({ _id: { $in: validIds } });
 
     logger.info(
