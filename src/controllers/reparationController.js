@@ -17,6 +17,35 @@ function escapeRegex(str) {
 }
 
 // ============================================================
+// ✅ HELPER : Découper une valeur CSV en tableau
+//    "v1,v2,v3"  → ["v1", "v2", "v3"]
+//    "v1"        → ["v1"]
+//    ""          → []
+// ============================================================
+function parseMultiValue(val) {
+  if (val === undefined || val === null) return [];
+  const str = String(val).trim();
+  if (!str) return [];
+  return str
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// ============================================================
+// ✅ HELPER : Construire la clause Mongo depuis une valeur CSV
+//    - 0 valeur  → null (pas de filtre)
+//    - 1 valeur  → la valeur brute (compat : ObjectId ou string)
+//    - N valeurs → { $in: [...] }
+// ============================================================
+function buildInClause(val) {
+  const arr = parseMultiValue(val);
+  if (arr.length === 0) return null;
+  if (arr.length === 1) return arr[0];
+  return { $in: arr };
+}
+
+// ============================================================
 // ✅ HELPER : Synchroniser les pannes personnalisées avec la base
 // ============================================================
 async function syncPannesWithCategories(panneNoms, categorieId) {
@@ -58,43 +87,73 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
 }
 
 // ============================================================
-// GET - Liste des réparations avec filtres
+// GET - Liste des réparations avec filtres (MULTI-VALEURS)
 // ============================================================
 exports.getAll = async (req, res) => {
   try {
     const {
-      search, status, categorie, client, reparateur, createdBy, commercial,
+      search,
+      status,
+      categorie,
+      client,
+      reparateur,
+      createdBy,
+      commercial,
       famille,
-      dateDebut, dateFin, zone, limit = 50, page = 1, sort = '-createdAt'
+      dateDebut,
+      dateFin,
+      zone,
+      limit = 50,
+      page = 1,
+      sort = '-createdAt',
     } = req.query;
 
     const query = { isDeleted: false };
 
-    if (status) query.status = status;
-    if (client) query.client = client;
-    if (reparateur) query.reparateur = reparateur;
+    // ============================================================
+    // ✅ Filtres simples multi-sélection (CSV → $in)
+    // ============================================================
+    const statusClause = buildInClause(status);
+    if (statusClause) query.status = statusClause;
 
-    if (createdBy) query.createdBy = createdBy;
-    else if (commercial) query.createdBy = commercial;
+    const clientClause = buildInClause(client);
+    if (clientClause) query.client = clientClause;
+
+    const reparateurClause = buildInClause(reparateur);
+    if (reparateurClause) query.reparateur = reparateurClause;
+
+    // ✅ Commercial / createdBy (compat)
+    const createdByClause =
+      buildInClause(createdBy) || buildInClause(commercial);
+    if (createdByClause) query.createdBy = createdByClause;
 
     // ============================================================
-    // ✅ Filtre FAMILLE + CATÉGORIE combinés
+    // ✅ Filtres FAMILLE + CATÉGORIE (multi, compatibles entre eux)
     // ============================================================
-    if (famille && famille.trim() !== '') {
+    const familleIds = parseMultiValue(famille);
+    const categorieIds = parseMultiValue(categorie);
+
+    if (familleIds.length > 0) {
+      // Récupérer toutes les catégories qui appartiennent à AU MOINS UNE famille sélectionnée
       const categoriesDeLaFamille = await Categorie.find({
-        famille: famille,
+        famille: { $in: familleIds },
       }).select('_id');
 
-      const categorieIdsDeLaFamille = categoriesDeLaFamille.map((c) => c._id);
+      const categorieIdsDeLaFamille = categoriesDeLaFamille.map((c) =>
+        String(c._id)
+      );
 
-      if (categorie) {
-        const appartientALaFamille = categorieIdsDeLaFamille.some(
-          (id) => String(id) === String(categorie)
+      // ✅ Intersection avec les catégories sélectionnées (si présentes)
+      if (categorieIds.length > 0) {
+        const intersection = categorieIds.filter((id) =>
+          categorieIdsDeLaFamille.includes(String(id))
         );
 
-        if (appartientALaFamille) {
-          query.categorie = categorie;
+        if (intersection.length > 0) {
+          query.categorie =
+            intersection.length === 1 ? intersection[0] : { $in: intersection };
         } else {
+          // Aucune catégorie sélectionnée n'appartient aux familles → résultat vide
           return res.json({
             success: true,
             data: [],
@@ -102,6 +161,7 @@ exports.getAll = async (req, res) => {
           });
         }
       } else {
+        // Pas de catégorie sélectionnée → toutes les catégories des familles
         if (categorieIdsDeLaFamille.length > 0) {
           query.categorie = { $in: categorieIdsDeLaFamille };
         } else {
@@ -112,20 +172,61 @@ exports.getAll = async (req, res) => {
           });
         }
       }
-    } else if (categorie) {
-      query.categorie = categorie;
+    } else if (categorieIds.length > 0) {
+      // Pas de famille mais catégories sélectionnées
+      query.categorie =
+        categorieIds.length === 1 ? categorieIds[0] : { $in: categorieIds };
     }
 
-    // ✅ Filtre ZONE
-    if (zone && zone.trim() !== '') {
+    // ============================================================
+    // ✅ Filtre ZONE (multi) : résoudre en IDs clients
+    // ============================================================
+    const zoneValues = parseMultiValue(zone);
+    if (zoneValues.length > 0) {
+      // Recherche insensible à la casse pour chaque zone
+      const zoneRegex = zoneValues.map((z) => ({
+        zone: { $regex: `^${escapeRegex(z)}$`, $options: 'i' },
+      }));
+
       const clientsWithZone = await Client.find({
-        zone: { $regex: `^${escapeRegex(zone)}$`, $options: 'i' },
+        $or: zoneRegex,
       }).select('_id');
 
-      const clientIds = clientsWithZone.map((c) => c._id);
+      const clientIdsZone = clientsWithZone.map((c) => c._id);
 
-      if (clientIds.length > 0) {
-        query.client = { $in: clientIds };
+      if (clientIdsZone.length > 0) {
+        // ⚠️ Fusionner avec un éventuel filtre client déjà présent
+        if (query.client && typeof query.client === 'object' && query.client.$in) {
+          query.client = {
+            $in: query.client.$in.filter((id) =>
+              clientIdsZone.some((cid) => String(cid) === String(id))
+            ),
+          };
+          if (query.client.$in.length === 0) {
+            return res.json({
+              success: true,
+              data: [],
+              pagination: { total: 0, page: 1, pages: 0 },
+            });
+          }
+        } else if (query.client) {
+          // client unique déjà filtré
+          const belongs = clientIdsZone.some(
+            (cid) => String(cid) === String(query.client)
+          );
+          if (!belongs) {
+            return res.json({
+              success: true,
+              data: [],
+              pagination: { total: 0, page: 1, pages: 0 },
+            });
+          }
+        } else {
+          query.client =
+            clientIdsZone.length === 1
+              ? clientIdsZone[0]
+              : { $in: clientIdsZone };
+        }
       } else {
         return res.json({
           success: true,
@@ -135,22 +236,25 @@ exports.getAll = async (req, res) => {
       }
     }
 
+    // ============================================================
     // ✅ Recherche globale
+    // ============================================================
     if (search) {
-      const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
-        Client.find({
-          $or: [
-            { nom: { $regex: search, $options: 'i' } },
-            { phone: { $regex: search, $options: 'i' } },
-            { phone2: { $regex: search, $options: 'i' } },
-            { code: { $regex: search, $options: 'i' } },
-            { adresse: { $regex: search, $options: 'i' } },
-            { zone: { $regex: search, $options: 'i' } },
-          ],
-        }).select('_id'),
-        Marque.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
-        Modele.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
-      ]);
+      const [matchingClients, matchingMarques, matchingModeles] =
+        await Promise.all([
+          Client.find({
+            $or: [
+              { nom: { $regex: search, $options: 'i' } },
+              { phone: { $regex: search, $options: 'i' } },
+              { phone2: { $regex: search, $options: 'i' } },
+              { code: { $regex: search, $options: 'i' } },
+              { adresse: { $regex: search, $options: 'i' } },
+              { zone: { $regex: search, $options: 'i' } },
+            ],
+          }).select('_id'),
+          Marque.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
+          Modele.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
+        ]);
 
       const clientIds = matchingClients.map((c) => c._id);
       const marqueIds = matchingMarques.map((m) => m._id);
@@ -167,6 +271,9 @@ exports.getAll = async (req, res) => {
       ];
     }
 
+    // ============================================================
+    // ✅ Filtre DATES
+    // ============================================================
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
@@ -197,8 +304,14 @@ exports.getAll = async (req, res) => {
         .populate('createdBy', 'username firstName lastName')
         .populate('representant', 'username firstName lastName')
         .populate('reparateur', 'username firstName lastName')
-        .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
-        .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+        .populate(
+          'diagnosticImprevus.imprevus.decisionPar',
+          'username firstName lastName'
+        )
+        .populate(
+          'diagnosticImprevus.decisionClient.enregistrePar',
+          'username firstName lastName'
+        )
         .populate('smsEnvoyes.envoyePar', 'username firstName lastName')
         .sort(sort)
         .skip(skip)
@@ -211,8 +324,9 @@ exports.getAll = async (req, res) => {
       reste: r.prix - r.acompte,
       prixTotal: r.prixTotal,
       resteTotal: r.resteTotal,
-      imprevusEnAttente: (r.diagnosticImprevus?.imprevus || [])
-        .filter((i) => i.accepte === null || i.accepte === undefined).length,
+      imprevusEnAttente: (r.diagnosticImprevus?.imprevus || []).filter(
+        (i) => i.accepte === null || i.accepte === undefined
+      ).length,
     }));
 
     res.json({
@@ -256,8 +370,14 @@ exports.getOne = async (req, res) => {
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
-      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+      .populate(
+        'diagnosticImprevus.imprevus.decisionPar',
+        'username firstName lastName'
+      )
+      .populate(
+        'diagnosticImprevus.decisionClient.enregistrePar',
+        'username firstName lastName'
+      )
       .populate('smsEnvoyes.envoyePar', 'username firstName lastName');
 
     if (!reparation || reparation.isDeleted) {
@@ -510,8 +630,14 @@ exports.create = async (req, res) => {
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
-      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName');
+      .populate(
+        'diagnosticImprevus.imprevus.decisionPar',
+        'username firstName lastName'
+      )
+      .populate(
+        'diagnosticImprevus.decisionClient.enregistrePar',
+        'username firstName lastName'
+      );
 
     logger.info(`Réparation créée: ${reparation.numero} par ${req.user.username}`);
 
@@ -555,9 +681,6 @@ exports.update = async (req, res) => {
       envoyerSMS = false,
     } = req.body;
 
-    // ============================================================
-    // ✅ VALIDATION : nouveau client (si fourni et différent)
-    // ============================================================
     if (client !== undefined && client !== null && client !== '') {
       const currentClientId = reparation.client ? reparation.client.toString() : null;
 
@@ -644,7 +767,6 @@ exports.update = async (req, res) => {
       isNotified: reparation.isNotified,
     };
 
-    // ✅ AJOUT : assigner le nouveau client
     if (client !== undefined && client !== null && client !== '') {
       reparation.client = client;
     }
@@ -862,8 +984,14 @@ exports.update = async (req, res) => {
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
-      .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+      .populate(
+        'diagnosticImprevus.imprevus.decisionPar',
+        'username firstName lastName'
+      )
+      .populate(
+        'diagnosticImprevus.decisionClient.enregistrePar',
+        'username firstName lastName'
+      )
       .populate('smsEnvoyes.envoyePar', 'username firstName lastName');
 
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
