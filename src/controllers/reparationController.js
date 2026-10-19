@@ -18,9 +18,6 @@ function escapeRegex(str) {
 
 // ============================================================
 // ✅ HELPER : Découper une valeur CSV en tableau
-//    "v1,v2,v3"  → ["v1", "v2", "v3"]
-//    "v1"        → ["v1"]
-//    ""          → []
 // ============================================================
 function parseMultiValue(val) {
   if (val === undefined || val === null) return [];
@@ -34,9 +31,6 @@ function parseMultiValue(val) {
 
 // ============================================================
 // ✅ HELPER : Construire la clause Mongo depuis une valeur CSV
-//    - 0 valeur  → null (pas de filtre)
-//    - 1 valeur  → la valeur brute (compat : ObjectId ou string)
-//    - N valeurs → { $in: [...] }
 // ============================================================
 function buildInClause(val) {
   const arr = parseMultiValue(val);
@@ -87,6 +81,82 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
 }
 
 // ============================================================
+// ✅ HELPER : Envoi SMS + persistance + diagnostic
+//    Utilisé par update() et changeStatus()
+// ============================================================
+async function trySendSMS(reparationId, statusIdOrDoc, userId) {
+  try {
+    // 1. Recharger avec client populé (essentiel pour les anciens clients)
+    const repWithClient = await Reparation.findById(reparationId).populate(
+      'client',
+      'nom phone phone2 email code'
+    );
+
+    if (!repWithClient) {
+      console.log('🔴 trySendSMS: réparation introuvable', reparationId);
+      return {
+        statutEnvoi: 'echec',
+        erreur: 'Réparation introuvable',
+        skip: true,
+      };
+    }
+
+    // 2. Résoudre le document de statut
+    let statusDoc = null;
+    if (statusIdOrDoc && typeof statusIdOrDoc === 'object' && statusIdOrDoc.label) {
+      statusDoc = statusIdOrDoc;
+    } else {
+      const statusId = statusIdOrDoc || repWithClient.status;
+      statusDoc = await Status.findById(statusId);
+    }
+
+    if (!statusDoc) {
+      console.log('🔴 trySendSMS: statut introuvable', statusIdOrDoc);
+      return {
+        statutEnvoi: 'echec',
+        erreur: 'Statut introuvable',
+        skip: true,
+      };
+    }
+
+    // 3. Diagnostic console
+    console.log('🟡 trySendSMS:', {
+      numero: repWithClient.numero,
+      statusLabel: statusDoc.label,
+      clientPhone: repWithClient.client?.phone,
+      phoneType: typeof repWithClient.client?.phone,
+      hasApiKey: Boolean(process.env.TEXTBEE_API_KEY),
+    });
+
+    // 4. Appel au service SMS
+    const smsInfo = await smsService.sendStatusSMS(
+      repWithClient,
+      statusDoc.label,
+      userId
+    );
+
+    // 5. Persister l'entrée SMS seulement si un envoi a été réellement tenté
+    if (smsInfo && !smsInfo.skip) {
+      repWithClient.smsEnvoyes = [
+        ...(repWithClient.smsEnvoyes || []),
+        smsInfo,
+      ];
+      await repWithClient.save();
+    }
+
+    return smsInfo;
+  } catch (error) {
+    logger.error('Erreur trySendSMS:', error);
+    console.log('🔴 Erreur trySendSMS:', error.message);
+    return {
+      statutEnvoi: 'echec',
+      erreur: error.message,
+      skip: false,
+    };
+  }
+}
+
+// ============================================================
 // GET - Liste des réparations avec filtres (MULTI-VALEURS)
 // ============================================================
 exports.getAll = async (req, res) => {
@@ -110,9 +180,7 @@ exports.getAll = async (req, res) => {
 
     const query = { isDeleted: false };
 
-    // ============================================================
-    // ✅ Filtres simples multi-sélection (CSV → $in)
-    // ============================================================
+    // ---- Filtres simples multi-sélection ----
     const statusClause = buildInClause(status);
     if (statusClause) query.status = statusClause;
 
@@ -122,19 +190,15 @@ exports.getAll = async (req, res) => {
     const reparateurClause = buildInClause(reparateur);
     if (reparateurClause) query.reparateur = reparateurClause;
 
-    // ✅ Commercial / createdBy (compat)
     const createdByClause =
       buildInClause(createdBy) || buildInClause(commercial);
     if (createdByClause) query.createdBy = createdByClause;
 
-    // ============================================================
-    // ✅ Filtres FAMILLE + CATÉGORIE (multi, compatibles entre eux)
-    // ============================================================
+    // ---- Filtres FAMILLE + CATÉGORIE ----
     const familleIds = parseMultiValue(famille);
     const categorieIds = parseMultiValue(categorie);
 
     if (familleIds.length > 0) {
-      // Récupérer toutes les catégories qui appartiennent à AU MOINS UNE famille sélectionnée
       const categoriesDeLaFamille = await Categorie.find({
         famille: { $in: familleIds },
       }).select('_id');
@@ -143,7 +207,6 @@ exports.getAll = async (req, res) => {
         String(c._id)
       );
 
-      // ✅ Intersection avec les catégories sélectionnées (si présentes)
       if (categorieIds.length > 0) {
         const intersection = categorieIds.filter((id) =>
           categorieIdsDeLaFamille.includes(String(id))
@@ -153,7 +216,6 @@ exports.getAll = async (req, res) => {
           query.categorie =
             intersection.length === 1 ? intersection[0] : { $in: intersection };
         } else {
-          // Aucune catégorie sélectionnée n'appartient aux familles → résultat vide
           return res.json({
             success: true,
             data: [],
@@ -161,7 +223,6 @@ exports.getAll = async (req, res) => {
           });
         }
       } else {
-        // Pas de catégorie sélectionnée → toutes les catégories des familles
         if (categorieIdsDeLaFamille.length > 0) {
           query.categorie = { $in: categorieIdsDeLaFamille };
         } else {
@@ -173,17 +234,13 @@ exports.getAll = async (req, res) => {
         }
       }
     } else if (categorieIds.length > 0) {
-      // Pas de famille mais catégories sélectionnées
       query.categorie =
         categorieIds.length === 1 ? categorieIds[0] : { $in: categorieIds };
     }
 
-    // ============================================================
-    // ✅ Filtre ZONE (multi) : résoudre en IDs clients
-    // ============================================================
+    // ---- Filtre ZONE ----
     const zoneValues = parseMultiValue(zone);
     if (zoneValues.length > 0) {
-      // Recherche insensible à la casse pour chaque zone
       const zoneRegex = zoneValues.map((z) => ({
         zone: { $regex: `^${escapeRegex(z)}$`, $options: 'i' },
       }));
@@ -195,7 +252,6 @@ exports.getAll = async (req, res) => {
       const clientIdsZone = clientsWithZone.map((c) => c._id);
 
       if (clientIdsZone.length > 0) {
-        // ⚠️ Fusionner avec un éventuel filtre client déjà présent
         if (query.client && typeof query.client === 'object' && query.client.$in) {
           query.client = {
             $in: query.client.$in.filter((id) =>
@@ -210,7 +266,6 @@ exports.getAll = async (req, res) => {
             });
           }
         } else if (query.client) {
-          // client unique déjà filtré
           const belongs = clientIdsZone.some(
             (cid) => String(cid) === String(query.client)
           );
@@ -236,9 +291,7 @@ exports.getAll = async (req, res) => {
       }
     }
 
-    // ============================================================
-    // ✅ Recherche globale
-    // ============================================================
+    // ---- Recherche globale ----
     if (search) {
       const [matchingClients, matchingMarques, matchingModeles] =
         await Promise.all([
@@ -271,9 +324,7 @@ exports.getAll = async (req, res) => {
       ];
     }
 
-    // ============================================================
-    // ✅ Filtre DATES
-    // ============================================================
+    // ---- Filtre DATES ----
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
@@ -641,9 +692,16 @@ exports.create = async (req, res) => {
 
     logger.info(`Réparation créée: ${reparation.numero} par ${req.user.username}`);
 
+    // ✅ Envoi SMS à la création si demandé
+    let smsInfo = null;
+    if (req.body.envoyerSMS) {
+      smsInfo = await trySendSMS(reparation._id, statusExists, req.user.id);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Réparation créée avec succès',
+      sms: smsInfo,
       data: {
         ...populated.toObject(),
         reste: populated.prix - populated.acompte,
@@ -681,16 +739,13 @@ exports.update = async (req, res) => {
       envoyerSMS = false,
     } = req.body;
 
+    // ---- Validations ----
     if (client !== undefined && client !== null && client !== '') {
       const currentClientId = reparation.client ? reparation.client.toString() : null;
-
       if (client !== currentClientId) {
         const clientExists = await Client.findById(client);
         if (!clientExists) {
-          return res.status(400).json({
-            success: false,
-            message: 'Client non trouvé',
-          });
+          return res.status(400).json({ success: false, message: 'Client non trouvé' });
         }
       }
     }
@@ -743,6 +798,7 @@ exports.update = async (req, res) => {
       }
     }
 
+    // ---- Snapshot des anciennes valeurs ----
     const oldValues = {
       client: reparation.client,
       categorie: reparation.categorie,
@@ -767,6 +823,7 @@ exports.update = async (req, res) => {
       isNotified: reparation.isNotified,
     };
 
+    // ---- Application des modifications ----
     if (client !== undefined && client !== null && client !== '') {
       reparation.client = client;
     }
@@ -861,6 +918,7 @@ exports.update = async (req, res) => {
       }
     }
 
+    // ---- Traçabilité ----
     const trackedFields = [
       'client',
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
@@ -944,26 +1002,17 @@ exports.update = async (req, res) => {
 
     await reparation.save();
 
-    if (envoyerSMS && status && status !== oldValues.status?.toString()) {
-      const newStatusDoc = await Status.findById(status);
-      if (newStatusDoc) {
-        const repWithClient = await Reparation.findById(reparation._id)
-          .populate('client', 'nom phone phone2 email code');
-
-        const smsResult = await smsService.sendStatusSMS(
-          repWithClient,
-          newStatusDoc.label,
-          req.user.id
-        );
-
-        if (smsResult) {
-          repWithClient.smsEnvoyes = [
-            ...(repWithClient.smsEnvoyes || []),
-            smsResult,
-          ];
-          await repWithClient.save();
-        }
-      }
+    // ============================================================
+    // ✅ Envoi SMS — même si le statut n'a pas changé
+    //    (l'utilisateur a explicitement coché "Envoyer SMS")
+    // ============================================================
+    let smsInfo = null;
+    if (envoyerSMS) {
+      smsInfo = await trySendSMS(
+        reparation._id,
+        status || reparation.status,
+        req.user.id
+      );
     }
 
     const populated = await Reparation.findById(reparation._id)
@@ -999,6 +1048,7 @@ exports.update = async (req, res) => {
     res.json({
       success: true,
       message: 'Réparation modifiée avec succès',
+      sms: smsInfo, // ✅ diagnostic SMS renvoyé au frontend
       data: {
         ...populated.toObject(),
         reste: populated.prix - populated.acompte,
@@ -1061,30 +1111,23 @@ exports.changeStatus = async (req, res) => {
 
     await reparation.save();
 
+    // ✅ Envoi SMS via helper unifié
+    let smsInfo = null;
     if (envoyerSMS) {
-      const smsResult = await smsService.sendStatusSMS(
-        reparation,
-        statusExists.label,
-        req.user.id
-      );
-
-      if (smsResult) {
-        reparation.smsEnvoyes = [
-          ...(reparation.smsEnvoyes || []),
-          smsResult,
-        ];
-        await reparation.save();
-      }
+      smsInfo = await trySendSMS(reparation._id, statusExists, req.user.id);
     }
 
     const populated = await Reparation.findById(reparation._id)
       .populate('status', 'label color');
 
-    logger.info(`Statut changé: ${reparation.numero} -> ${statusExists.label} par ${req.user.username}`);
+    logger.info(
+      `Statut changé: ${reparation.numero} -> ${statusExists.label} par ${req.user.username}`
+    );
 
     res.json({
       success: true,
       message: 'Statut changé avec succès',
+      sms: smsInfo,
       data: populated,
     });
   } catch (error) {
