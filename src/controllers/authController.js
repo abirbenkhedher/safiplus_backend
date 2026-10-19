@@ -36,26 +36,40 @@ const login = async (req, res) => {
       return res.status(400).json({ success: false, message: error.details[0].message });
     }
 
-    const user = await User.findOne({ username }).select('+password');
+    // ✅ Recherche INSENSIBLE à la casse
+    // On échappe les caractères regex pour éviter les injections
+    const escaped = String(username).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const user = await User.findOne({
+      username: { $regex: `^${escaped}$`, $options: 'i' },
+    }).select('+password');
 
     if (!user) {
-      return res.status(401).json({ success: false, message: 'Nom d\'utilisateur ou mot de passe incorrect' });
+      return res.status(401).json({
+        success: false,
+        message: "Nom d'utilisateur ou mot de passe incorrect",
+      });
     }
 
     if (!user.isActive) {
-      return res.status(403).json({ success: false, message: 'Compte désactivé. Contactez l\'administrateur.' });
+      return res.status(403).json({
+        success: false,
+        message: "Compte désactivé. Contactez l'administrateur.",
+      });
     }
 
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({ success: false, message: 'Nom d\'utilisateur ou mot de passe incorrect' });
+      return res.status(401).json({
+        success: false,
+        message: "Nom d'utilisateur ou mot de passe incorrect",
+      });
     }
 
-    // ✅ CRUCIAL : réinitialiser lastActivity à chaque login
-    // Sinon le middleware requireAuth détecte une "inactivité" dès la 1ère requête
+    // ✅ Réinitialiser lastActivity à chaque login
     const now = new Date();
     user.lastLogin = now;
-    user.lastActivity = now; // ✅ AJOUT
+    user.lastActivity = now;
 
     const { accessToken, refreshToken } = generateTokens(user);
 
@@ -66,7 +80,6 @@ const login = async (req, res) => {
     delete userData.password;
     delete userData.refreshToken;
 
-    // ✅ S'assurer que permissions est toujours un tableau
     if (!userData.permissions || !Array.isArray(userData.permissions)) {
       userData.permissions = User.DEFAULT_PERMISSIONS[userData.role] || [];
     }
