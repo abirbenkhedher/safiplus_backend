@@ -82,14 +82,12 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
 
 // ============================================================
 // ✅ HELPER : Envoi SMS + persistance + diagnostic
-//    Utilisé par update() et changeStatus()
 // ============================================================
 async function trySendSMS(reparationId, statusIdOrDoc, userId) {
   try {
-    // 1. Recharger avec client populé (essentiel pour les anciens clients)
     const repWithClient = await Reparation.findById(reparationId).populate(
       'client',
-      'nom phone phone2 email code'
+      'nom phone phone2 email code codeFidelite'  // ✅ codeFidelite ajouté
     );
 
     if (!repWithClient) {
@@ -101,7 +99,6 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
       };
     }
 
-    // 2. Résoudre le document de statut
     let statusDoc = null;
     if (statusIdOrDoc && typeof statusIdOrDoc === 'object' && statusIdOrDoc.label) {
       statusDoc = statusIdOrDoc;
@@ -119,7 +116,6 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
       };
     }
 
-    // 3. Diagnostic console
     console.log('🟡 trySendSMS:', {
       numero: repWithClient.numero,
       statusLabel: statusDoc.label,
@@ -128,14 +124,12 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
       hasApiKey: Boolean(process.env.TEXTBEE_API_KEY),
     });
 
-    // 4. Appel au service SMS
     const smsInfo = await smsService.sendStatusSMS(
       repWithClient,
       statusDoc.label,
       userId
     );
 
-    // 5. Persister l'entrée SMS seulement si un envoi a été réellement tenté
     if (smsInfo && !smsInfo.skip) {
       repWithClient.smsEnvoyes = [
         ...(repWithClient.smsEnvoyes || []),
@@ -180,7 +174,6 @@ exports.getAll = async (req, res) => {
 
     const query = { isDeleted: false };
 
-    // ---- Filtres simples multi-sélection ----
     const statusClause = buildInClause(status);
     if (statusClause) query.status = statusClause;
 
@@ -194,7 +187,6 @@ exports.getAll = async (req, res) => {
       buildInClause(createdBy) || buildInClause(commercial);
     if (createdByClause) query.createdBy = createdByClause;
 
-    // ---- Filtres FAMILLE + CATÉGORIE ----
     const familleIds = parseMultiValue(famille);
     const categorieIds = parseMultiValue(categorie);
 
@@ -238,7 +230,6 @@ exports.getAll = async (req, res) => {
         categorieIds.length === 1 ? categorieIds[0] : { $in: categorieIds };
     }
 
-    // ---- Filtre ZONE ----
     const zoneValues = parseMultiValue(zone);
     if (zoneValues.length > 0) {
       const zoneRegex = zoneValues.map((z) => ({
@@ -291,7 +282,6 @@ exports.getAll = async (req, res) => {
       }
     }
 
-    // ---- Recherche globale ----
     if (search) {
       const [matchingClients, matchingMarques, matchingModeles] =
         await Promise.all([
@@ -301,6 +291,7 @@ exports.getAll = async (req, res) => {
               { phone: { $regex: search, $options: 'i' } },
               { phone2: { $regex: search, $options: 'i' } },
               { code: { $regex: search, $options: 'i' } },
+              { codeFidelite: { $regex: search, $options: 'i' } },  // ✅ codeFidelite
               { adresse: { $regex: search, $options: 'i' } },
               { zone: { $regex: search, $options: 'i' } },
             ],
@@ -324,7 +315,6 @@ exports.getAll = async (req, res) => {
       ];
     }
 
-    // ---- Filtre DATES ----
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
@@ -339,7 +329,7 @@ exports.getAll = async (req, res) => {
 
     const [reparations, total] = await Promise.all([
       Reparation.find(query)
-        .populate('client', 'nom phone phone2 email code adresse zone')
+        .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')  // ✅ codeFidelite
         .populate('status', 'label color parDefault')
         .populate({
           path: 'categorie',
@@ -404,7 +394,7 @@ exports.getAll = async (req, res) => {
 exports.getOne = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code adresse')
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
       .populate('status', 'label color parDefault')
       .populate({
         path: 'categorie',
@@ -471,7 +461,7 @@ exports.getPublicByNumero = async (req, res) => {
     }
 
     const reparation = await Reparation.findOne({ numero, isDeleted: false })
-      .populate('client', 'nom phone phone2 adresse')
+      .populate('client', 'nom phone phone2 codeFidelite adresse')  // ✅ codeFidelite
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -506,6 +496,7 @@ exports.getPublicByNumero = async (req, res) => {
           nom: reparation.client?.nom || 'N/A',
           phone: reparation.client?.phone,
           phone2: reparation.client?.phone2,
+          codeFidelite: reparation.client?.codeFidelite,  // ✅ codeFidelite
           adresse: reparation.client?.adresse,
         },
         objet: reparation.objet?.nom,
@@ -664,7 +655,7 @@ exports.create = async (req, res) => {
     await syncPannesWithCategories(cleanPanneTypes, categorie);
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone phone2 email code adresse')
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -692,7 +683,6 @@ exports.create = async (req, res) => {
 
     logger.info(`Réparation créée: ${reparation.numero} par ${req.user.username}`);
 
-    // ✅ Envoi SMS à la création si demandé
     let smsInfo = null;
     if (req.body.envoyerSMS) {
       smsInfo = await trySendSMS(reparation._id, statusExists, req.user.id);
@@ -739,7 +729,6 @@ exports.update = async (req, res) => {
       envoyerSMS = false,
     } = req.body;
 
-    // ---- Validations ----
     if (client !== undefined && client !== null && client !== '') {
       const currentClientId = reparation.client ? reparation.client.toString() : null;
       if (client !== currentClientId) {
@@ -798,7 +787,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ---- Snapshot des anciennes valeurs ----
     const oldValues = {
       client: reparation.client,
       categorie: reparation.categorie,
@@ -823,7 +811,6 @@ exports.update = async (req, res) => {
       isNotified: reparation.isNotified,
     };
 
-    // ---- Application des modifications ----
     if (client !== undefined && client !== null && client !== '') {
       reparation.client = client;
     }
@@ -918,7 +905,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ---- Traçabilité ----
     const trackedFields = [
       'client',
       'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
@@ -1002,10 +988,6 @@ exports.update = async (req, res) => {
 
     await reparation.save();
 
-    // ============================================================
-    // ✅ Envoi SMS — même si le statut n'a pas changé
-    //    (l'utilisateur a explicitement coché "Envoyer SMS")
-    // ============================================================
     let smsInfo = null;
     if (envoyerSMS) {
       smsInfo = await trySendSMS(
@@ -1016,7 +998,7 @@ exports.update = async (req, res) => {
     }
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone phone2 email code adresse')
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -1048,7 +1030,7 @@ exports.update = async (req, res) => {
     res.json({
       success: true,
       message: 'Réparation modifiée avec succès',
-      sms: smsInfo, // ✅ diagnostic SMS renvoyé au frontend
+      sms: smsInfo,
       data: {
         ...populated.toObject(),
         reste: populated.prix - populated.acompte,
@@ -1073,7 +1055,7 @@ exports.changeStatus = async (req, res) => {
     const { status, comment, envoyerSMS = false } = req.body;
 
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code');
+      .populate('client', 'nom phone phone2 email code codeFidelite');  // ✅ codeFidelite
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -1111,7 +1093,6 @@ exports.changeStatus = async (req, res) => {
 
     await reparation.save();
 
-    // ✅ Envoi SMS via helper unifié
     let smsInfo = null;
     if (envoyerSMS) {
       smsInfo = await trySendSMS(reparation._id, statusExists, req.user.id);
@@ -1233,7 +1214,7 @@ exports.delete = async (req, res) => {
 exports.generatePDF = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code adresse')
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -1281,7 +1262,7 @@ exports.generatePDF = async (req, res) => {
 exports.getTicketHTML = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code adresse')
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
       .populate('status', 'label color')
       .populate({
         path: 'categorie',

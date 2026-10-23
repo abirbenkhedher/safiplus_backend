@@ -30,7 +30,6 @@ exports.exportReparations = async (req, res) => {
     if (reparateur) query.reparateur = reparateur;
     if (createdBy) query.createdBy = createdBy;
 
-    // ✅ Filtre zone
     if (zone && zone.trim() !== '') {
       const clientsWithZone = await Client.find({
         zone: { $regex: `^${zone}$`, $options: 'i' },
@@ -41,7 +40,6 @@ exports.exportReparations = async (req, res) => {
       if (clientIds.length > 0) {
         query.client = { $in: clientIds };
       } else {
-        // Aucun client → aucun résultat
         return res.json({
           success: true,
           data: [],
@@ -80,14 +78,7 @@ exports.exportReparations = async (req, res) => {
       .sort({ createdAt: -1 });
 
     const filters = {
-      search,
-      status,
-      categorie,
-      client,
-      reparateur,
-      zone,
-      dateDebut,
-      dateFin,
+      search, status, categorie, client, reparateur, zone, dateDebut, dateFin,
     };
 
     const workbook = await excelService.exportReparations(reparations, filters);
@@ -108,7 +99,7 @@ exports.exportReparations = async (req, res) => {
 };
 
 // ============================================================
-// ✅ POST - Export Excel des réparations (données filtrées client)
+// POST - Export Excel des réparations (données filtrées client)
 // ============================================================
 exports.exportReparationsPost = async (req, res) => {
   try {
@@ -198,7 +189,7 @@ exports.exportClients = async (req, res) => {
 };
 
 // ============================================================
-// ✅ POST - Export Excel des clients (données filtrées client)
+// POST - Export Excel des clients (données filtrées client)
 // ============================================================
 exports.exportClientsPost = async (req, res) => {
   try {
@@ -211,11 +202,8 @@ exports.exportClientsPost = async (req, res) => {
       });
     }
 
-    // ✅ Enrichir avec les stats (totalReparations, totalPaye, totalRestant)
-    //    si non fournies par le client frontend
     const clientsWithStats = await Promise.all(
       clients.map(async (client) => {
-        // Si le client a déjà les stats → les garder
         if (
           client.totalReparations !== undefined &&
           client.totalPaye !== undefined &&
@@ -224,7 +212,6 @@ exports.exportClientsPost = async (req, res) => {
           return client;
         }
 
-        // Sinon, les calculer
         const clientId = client._id || client.id;
         const reparations = await Reparation.find({
           client: clientId,
@@ -343,5 +330,74 @@ exports.exportHistory = async (req, res) => {
       success: false,
       message: "Erreur lors de l'export Excel",
     });
+  }
+};
+
+// ============================================================
+// ✅ NOUVEAU : POST - Export Excel des appareils (statistiques)
+// ============================================================
+exports.exportAppareils = async (req, res) => {
+  try {
+    const { appareils, filters } = req.body;
+
+    if (!Array.isArray(appareils)) {
+      return res.status(400).json({
+        success: false,
+        message: 'La liste des appareils est requise',
+      });
+    }
+
+    const workbook = await excelService.exportAppareils(appareils, filters || {});
+    const filename = `appareils_stats_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    await excelService.sendWorkbook(res, workbook, filename);
+
+    logger.info(
+      `Export Excel appareils: ${appareils.length} lignes par ${req.user.username}`
+    );
+  } catch (error) {
+    logger.error('Erreur exportAppareils:', error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur lors de l'export Excel",
+    });
+  }
+};
+
+// ============================================================
+// ✅ NOUVEAU : POST - Export Excel des familles
+// ============================================================
+exports.exportFamilles = async (req, res) => {
+  try {
+    const { familles, filters } = req.body;
+    if (!Array.isArray(familles)) {
+      return res.status(400).json({ success: false, message: 'La liste des familles est requise' });
+    }
+    const workbook = await excelService.exportFamilles(familles, filters || {});
+    const filename = `familles_stats_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    await excelService.sendWorkbook(res, workbook, filename);
+    logger.info(`Export Excel familles: ${familles.length} lignes par ${req.user.username}`);
+  } catch (error) {
+    logger.error('Erreur exportFamilles:', error);
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
+  }
+};
+
+// ============================================================
+// ✅ NOUVEAU : POST - Export Excel des catégories
+// ============================================================
+exports.exportCategories = async (req, res) => {
+  try {
+    const { categories, filters } = req.body;
+    if (!Array.isArray(categories)) {
+      return res.status(400).json({ success: false, message: 'La liste des catégories est requise' });
+    }
+    const workbook = await excelService.exportCategories(categories, filters || {});
+    const filename = `categories_stats_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    await excelService.sendWorkbook(res, workbook, filename);
+    logger.info(`Export Excel catégories: ${categories.length} lignes par ${req.user.username}`);
+  } catch (error) {
+    logger.error('Erreur exportCategories:', error);
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };

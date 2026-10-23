@@ -141,6 +141,10 @@ const formatFilters = (filters = {}) => {
     paymentStatus: 'Paiement',
     hasReparations: 'Réparations',
     topClients: 'Classement',
+    famille: 'Famille',
+    objet: 'Objet',
+    marque: 'Marque',
+    modele: 'Modèle',
   };
 
   const valueLabels = {
@@ -170,7 +174,6 @@ const exportReparations = async (reparations, filters = {}) => {
   const workbook = createWorkbook();
   const worksheet = workbook.addWorksheet('Réparations');
 
-  // Définir les colonnes
   const headers = [
     'N°', 'Date création', 'Client', 'Code client', 'Téléphone',
     'Zone', 'Catégorie', 'Objet', 'Marque', 'Modèle',
@@ -185,7 +188,6 @@ const exportReparations = async (reparations, filters = {}) => {
     20, 20, 18, 30,
   ];
 
-  // Titre
   addTitle(
     worksheet,
     '📋 LISTE DES RÉPARATIONS',
@@ -195,11 +197,9 @@ const exportReparations = async (reparations, filters = {}) => {
     headers.length
   );
 
-  // En-têtes
   addHeader(worksheet, headers);
   setColumnWidths(worksheet, widths);
 
-  // Couleurs des statuts
   const statusColors = {
     'En attente': 'FFFFC107',
     Diagnostic: 'FF17A2B8',
@@ -220,7 +220,6 @@ const exportReparations = async (reparations, filters = {}) => {
   let totalAcompte = 0;
   let totalReste = 0;
 
-  // Ajouter les données
   reparations.forEach((rep, index) => {
     const prix = rep.prix || 0;
     const acompte = rep.acompte || 0;
@@ -230,7 +229,6 @@ const exportReparations = async (reparations, filters = {}) => {
     totalAcompte += acompte;
     totalReste += reste;
 
-    // ✅ Extraire les noms (au cas où ce sont des objets populate)
     const marqueNom =
       typeof rep.marque === 'object' && rep.marque !== null
         ? rep.marque.nom
@@ -240,7 +238,6 @@ const exportReparations = async (reparations, filters = {}) => {
         ? rep.modele.nom
         : rep.modele || '-';
 
-    // ✅ Pannes : gérer tableau OU string
     const pannesTexte = Array.isArray(rep.panneType)
       ? rep.panneType.join(', ')
       : rep.panneType || 'N/A';
@@ -253,12 +250,12 @@ const exportReparations = async (reparations, filters = {}) => {
       rep.client?.nom || 'N/A',
       rep.client?.code || 'N/A',
       rep.client?.phone || 'N/A',
-      rep.client?.zone || '-',                  // ✅ NOUVEAU : Zone
+      rep.client?.zone || '-',
       rep.categorie?.nom || 'N/A',
       rep.objet?.nom || 'N/A',
       marqueNom,
       modeleNom,
-      pannesTexte,                              // ✅ Pannes multi
+      pannesTexte,
       rep.status?.label || 'N/A',
       prix,
       acompte,
@@ -278,7 +275,6 @@ const exportReparations = async (reparations, filters = {}) => {
     const row = worksheet.addRow(rowData);
     styleDataRow(row, index % 2 === 1);
 
-    // Colorer la colonne Statut (colonne 12 maintenant)
     const statusCell = row.getCell(12);
     if (rep.status?.label && statusColors[rep.status.label]) {
       statusCell.fill = {
@@ -296,7 +292,6 @@ const exportReparations = async (reparations, filters = {}) => {
       };
     }
 
-    // Formater les montants (colonnes 13, 14, 15)
     [13, 14, 15].forEach((colIndex) => {
       const cell = row.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
@@ -304,7 +299,6 @@ const exportReparations = async (reparations, filters = {}) => {
     });
   });
 
-  // Ligne de totaux
   if (reparations.length > 0) {
     const totalRowData = new Array(headers.length).fill('');
     totalRowData[11] = 'TOTAUX';
@@ -341,7 +335,6 @@ const exportReparations = async (reparations, filters = {}) => {
     });
   }
 
-  // ✅ Filtres appliqués (avec formatFilters)
   const activeFilters = formatFilters(filters);
 
   if (activeFilters) {
@@ -355,7 +348,6 @@ const exportReparations = async (reparations, filters = {}) => {
     };
   }
 
-  // Figer les en-têtes (lignes 1-4)
   worksheet.views = [{ state: 'frozen', ySplit: 4 }];
 
   return workbook;
@@ -398,13 +390,13 @@ const exportClients = async (clients, filters = {}) => {
   clients.forEach((client, index) => {
     const rowData = [
       client.code || 'N/A',
-      client.codeFidelite || '-',              // ✅ NOUVEAU : Code fidélité
+      client.codeFidelite || '-',
       client.nom || 'N/A',
       client.phone || 'N/A',
-      client.phone2 || '-',                    // ✅ NOUVEAU : Téléphone 2
+      client.phone2 || '-',
       client.email || '-',
       client.adresse || '-',
-      client.zone || '-',                      // ✅ NOUVEAU : Zone
+      client.zone || '-',
       client.isActive ? 'Actif' : 'Inactif',
       client.totalReparations || 0,
       client.totalPaye || 0,
@@ -417,7 +409,6 @@ const exportClients = async (clients, filters = {}) => {
     const row = worksheet.addRow(rowData);
     styleDataRow(row, index % 2 === 1);
 
-    // Statut (colonne 9)
     const statusCell = row.getCell(9);
     statusCell.fill = {
       type: 'pattern',
@@ -427,7 +418,6 @@ const exportClients = async (clients, filters = {}) => {
     statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
     statusCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
-    // Montants (colonnes 11 et 12)
     [11, 12].forEach((colIndex) => {
       const cell = row.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
@@ -438,7 +428,6 @@ const exportClients = async (clients, filters = {}) => {
     totalRestant += client.totalRestant || 0;
   });
 
-  // Totaux
   if (clients.length > 0) {
     const totalRowData = new Array(headers.length).fill('');
     totalRowData[2] = 'TOTAUX';
@@ -464,7 +453,6 @@ const exportClients = async (clients, filters = {}) => {
     });
   }
 
-  // ✅ Filtres appliqués
   const activeFilters = formatFilters(filters);
 
   if (activeFilters) {
@@ -541,7 +529,6 @@ const exportUsers = async (users) => {
     const row = worksheet.addRow(rowData);
     styleDataRow(row, index % 2 === 1);
 
-    // Rôle (colonne 5)
     const roleCell = row.getCell(5);
     if (roleColors[user.role]) {
       roleCell.fill = {
@@ -553,7 +540,6 @@ const exportUsers = async (users) => {
       roleCell.alignment = { vertical: 'middle', horizontal: 'center' };
     }
 
-    // Statut (colonne 6)
     const statusCell = row.getCell(6);
     statusCell.fill = {
       type: 'pattern',
@@ -640,6 +626,125 @@ const exportHistory = async (history) => {
   return workbook;
 };
 
+// ============================================
+// ✅ EXPORT APPAREILS (Statistiques)
+// ============================================
+const exportAppareils = async (appareils, filters = {}) => {
+  const workbook = createWorkbook();
+  const worksheet = workbook.addWorksheet('Appareils');
+
+  const headers = [
+    'Famille', 'Catégorie', 'Objet', 'Marque', 'Modèle',
+    'Nb réparations', 'CA (DT)', 'Encaissé (DT)', 'Reste (DT)',
+  ];
+
+  const widths = [18, 22, 22, 18, 22, 14, 15, 15, 15];
+
+  addTitle(
+    worksheet,
+    '📱 STATISTIQUES PAR APPAREIL',
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${appareils.length} ligne(s)`,
+    headers.length
+  );
+
+  addHeader(worksheet, headers);
+  setColumnWidths(worksheet, widths);
+
+  let totalNb = 0;
+  let totalCA = 0;
+  let totalEncaisse = 0;
+  let totalReste = 0;
+
+  appareils.forEach((row, index) => {
+    const nb = row.nb_reparations || 0;
+    const ca = row.ca || 0;
+    const encaisse = row.encaisse || 0;
+    const reste = row.reste || 0;
+
+    totalNb += nb;
+    totalCA += ca;
+    totalEncaisse += encaisse;
+    totalReste += reste;
+
+    const rowData = [
+      row.famille || '-',
+      row.categorie || '-',
+      row.objet || '-',
+      row.marque || '-',
+      row.modele || '-',
+      nb,
+      ca,
+      encaisse,
+      reste,
+    ];
+
+    const dataRow = worksheet.addRow(rowData);
+    styleDataRow(dataRow, index % 2 === 1);
+
+    // Centrer le nombre
+    dataRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // Formater les montants (colonnes 7, 8, 9)
+    [7, 8, 9].forEach((col) => {
+      const cell = dataRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  });
+
+  // Ligne des totaux
+  if (appareils.length > 0) {
+    const totalRowData = new Array(headers.length).fill('');
+    totalRowData[0] = 'TOTAUX';
+    totalRowData[5] = totalNb;
+    totalRowData[6] = totalCA;
+    totalRowData[7] = totalEncaisse;
+    totalRowData[8] = totalReste;
+
+    const totalRow = worksheet.addRow(totalRowData);
+
+    totalRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 11 };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE7F1FF' },
+      };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        bottom: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+        right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+      };
+    });
+
+    totalRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'center' };
+    [7, 8, 9].forEach((col) => {
+      const cell = totalRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  }
+
+  // Filtres appliqués
+  const activeFilters = formatFilters(filters);
+
+  if (activeFilters) {
+    worksheet.addRow([]);
+    const filterRow = worksheet.addRow([`Filtres appliqués: ${activeFilters}`]);
+    worksheet.mergeCells(filterRow.number, 1, filterRow.number, headers.length);
+    filterRow.getCell(1).font = {
+      italic: true,
+      size: 9,
+      color: { argb: 'FF6C757D' },
+    };
+  }
+
+  worksheet.views = [{ state: 'frozen', ySplit: 4 }];
+
+  return workbook;
+};
+
 /**
  * Envoie le classeur en réponse HTTP
  */
@@ -659,10 +764,180 @@ const sendWorkbook = async (res, workbook, filename) => {
   }
 };
 
+// ============================================
+// ✅ EXPORT FAMILLES (Statistiques)
+// ============================================
+const exportFamilles = async (familles, filters = {}) => {
+  const workbook = createWorkbook();
+  const worksheet = workbook.addWorksheet('Familles');
+
+  const headers = [
+    'Famille', 'Nb réparations', 'CA (DT)', 'Encaissé (DT)', 'Reste (DT)',
+  ];
+  const widths = [25, 14, 15, 15, 15];
+
+  addTitle(
+    worksheet,
+    '🗂️ STATISTIQUES PAR FAMILLE',
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${familles.length} famille(s)`,
+    headers.length
+  );
+
+  addHeader(worksheet, headers);
+  setColumnWidths(worksheet, widths);
+
+  let totalNb = 0, totalCA = 0, totalEncaisse = 0, totalReste = 0;
+
+  familles.forEach((row, index) => {
+    const nb = row.nb_reparations || 0;
+    const ca = row.ca || 0;
+    const encaisse = row.encaisse || 0;
+    const reste = row.reste || 0;
+
+    totalNb += nb;
+    totalCA += ca;
+    totalEncaisse += encaisse;
+    totalReste += reste;
+
+    const dataRow = worksheet.addRow([
+      row.nom || '-', nb, ca, encaisse, reste,
+    ]);
+    styleDataRow(dataRow, index % 2 === 1);
+
+    dataRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+    [3, 4, 5].forEach((col) => {
+      const cell = dataRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  });
+
+  if (familles.length > 0) {
+    const totalRowData = new Array(headers.length).fill('');
+    totalRowData[0] = 'TOTAUX';
+    totalRowData[1] = totalNb;
+    totalRowData[2] = totalCA;
+    totalRowData[3] = totalEncaisse;
+    totalRowData[4] = totalReste;
+
+    const totalRow = worksheet.addRow(totalRowData);
+    totalRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 11 };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE7F1FF' },
+      };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        bottom: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+        right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+      };
+    });
+    totalRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+    [3, 4, 5].forEach((col) => {
+      const cell = totalRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  }
+
+  worksheet.views = [{ state: 'frozen', ySplit: 4 }];
+  return workbook;
+};
+
+// ============================================
+// ✅ EXPORT CATÉGORIES (Statistiques)
+// ============================================
+const exportCategories = async (categories, filters = {}) => {
+  const workbook = createWorkbook();
+  const worksheet = workbook.addWorksheet('Catégories');
+
+  const headers = [
+    'Catégorie', 'Famille', 'Nb réparations', 'CA (DT)', 'Encaissé (DT)', 'Reste (DT)',
+  ];
+  const widths = [25, 22, 14, 15, 15, 15];
+
+  addTitle(
+    worksheet,
+    '🏷️ STATISTIQUES PAR CATÉGORIE',
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${categories.length} catégorie(s)`,
+    headers.length
+  );
+
+  addHeader(worksheet, headers);
+  setColumnWidths(worksheet, widths);
+
+  let totalNb = 0, totalCA = 0, totalEncaisse = 0, totalReste = 0;
+
+  categories.forEach((row, index) => {
+    const nb = row.nb_reparations || 0;
+    const ca = row.ca || 0;
+    const encaisse = row.encaisse || 0;
+    const reste = row.reste || 0;
+
+    totalNb += nb;
+    totalCA += ca;
+    totalEncaisse += encaisse;
+    totalReste += reste;
+
+    const dataRow = worksheet.addRow([
+      row.nom || '-', row.famille || '-', nb, ca, encaisse, reste,
+    ]);
+    styleDataRow(dataRow, index % 2 === 1);
+
+    dataRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'center' };
+    [4, 5, 6].forEach((col) => {
+      const cell = dataRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  });
+
+  if (categories.length > 0) {
+    const totalRowData = new Array(headers.length).fill('');
+    totalRowData[0] = 'TOTAUX';
+    totalRowData[2] = totalNb;
+    totalRowData[3] = totalCA;
+    totalRowData[4] = totalEncaisse;
+    totalRowData[5] = totalReste;
+
+    const totalRow = worksheet.addRow(totalRowData);
+    totalRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 11 };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE7F1FF' },
+      };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        bottom: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+        right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+      };
+    });
+    totalRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'center' };
+    [4, 5, 6].forEach((col) => {
+      const cell = totalRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  }
+
+  worksheet.views = [{ state: 'frozen', ySplit: 4 }];
+  return workbook;
+};
+
 module.exports = {
   exportReparations,
   exportClients,
   exportUsers,
   exportHistory,
+  exportAppareils,  // ✅ NOUVEAU
+  exportCategories,
+  exportFamilles,
   sendWorkbook,
+
 };

@@ -21,6 +21,8 @@ const teamMessagesRouter = require('./src/routes/teamMessages');
 const marquesRoutes =  require('./src/routes/marquesRoutes');
 const modelesRoutes =  require('./src/routes/modelesRoutes');
 const pannesRoutes =  require('./src/routes/pannesRoutes');
+const statistiquesRoutes = require('./src/routes/statistiquesRoutes');
+const zonesRoutes = require('./src/routes/zonesRoutes');
 
 
 const app = express();
@@ -36,8 +38,9 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ✅ CORRECTION : Augmentation de la limite pour les exports volumineux
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Logger middleware
 app.use((req, res, next) => {
@@ -61,6 +64,8 @@ app.use('/api/team-messages', teamMessagesRouter);
 app.use('/api/marques', marquesRoutes);
 app.use('/api/modeles', modelesRoutes);
 app.use('/api/pannes', pannesRoutes);
+app.use("/api/statistiques", statistiquesRoutes);
+app.use('/api/zones', zonesRoutes);
 
 
 // Error handler
