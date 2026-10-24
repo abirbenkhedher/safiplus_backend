@@ -566,3 +566,151 @@ exports.getAppareils = async (from, to) => {
 
   return { topMarques, topModeles, table };
 };
+
+
+// ============================================================
+// 5. RÉPARATEURS (Performance & Retours SAV)
+// ============================================================
+exports.getReparateurs = async (from, to) => {
+  const match = buildMatch(from, to);
+  const prixTotalExpr = getPrixTotalExpr();
+
+  // ✅ ÉTAPE 1 : Trouver tous les statuts contenant "SAV"
+  const Status = require("../models/Status");
+  const savStatuses = await Status.find({ 
+    label: { $regex: /SAV/i } 
+  }).select('_id');
+  
+  const savStatusIds = savStatuses.map(s => s._id);
+  
+  console.log("🔍 [getReparateurs] Statuts SAV trouvés:", savStatuses.map(s => s.label));
+  console.log("🔍 [getReparateurs] IDs SAV:", savStatusIds);
+
+  // ✅ ÉTAPE 2 : Agrégation avec détection directe
+  const reparateurs = await Reparation.aggregate([
+    { $match: match },
+    { $match: { reparateur: { $ne: null } } },
+    
+    {
+      $addFields: {
+        // ✅ Détection du SAV en 3 critères
+        isSavDetected: {
+          $or: [
+            // Priorité 1 : isSAV flag
+            { $eq: ["$isSAV", true] },
+            
+            // Priorité 2 : Le statut est dans la liste des statuts SAV
+            { $in: ["$status", savStatusIds] },
+            
+            // Priorité 3 : reparateurSAV est renseigné
+            { $ne: [{ $ifNull: ["$reparateurSAV", null] }, null] },
+          ]
+        }
+      }
+    },
+    
+    {
+      $group: {
+        _id: "$reparateur",
+        total_reparations: { $sum: 1 },
+        total_sav: { $sum: { $cond: ["$isSavDetected", 1, 0] } },
+        ca_total: { $sum: prixTotalExpr },
+        encaisse: { $sum: { $ifNull: ["$acompte", 0] } },
+      }
+    },
+    
+    {
+      $lookup: {
+        from: "users",
+        localField: "_id",
+        foreignField: "_id",
+        as: "userData"
+      }
+    },
+    { $unwind: { path: "$userData", preserveNullAndEmptyArrays: true } },
+    
+    {
+      $project: {
+        _id: 0,
+        reparateur_id: "$_id",
+        nom: {
+          $let: {
+            vars: {
+              fullName: {
+                $concat: [
+                  { $ifNull: ["$userData.firstName", ""] },
+                  " ",
+                  { $ifNull: ["$userData.lastName", ""] }
+                ]
+              }
+            },
+            in: {
+              $cond: [
+                { $eq: [{ $trim: { input: "$$fullName" } }, ""] },
+                "Utilisateur supprimé",
+                { $trim: { input: "$$fullName" } }
+              ]
+            }
+          }
+        },
+        role: { $ifNull: ["$userData.role", "—"] },
+        total_reparations: 1,
+        total_sav: 1,
+        ca_total: 1,
+        encaisse: 1,
+        reste: { $subtract: ["$ca_total", "$encaisse"] },
+        taux_sav: {
+          $cond: [
+            { $gt: ["$total_reparations", 0] },
+            {
+              $round: [
+                { $multiply: [{ $divide: ["$total_sav", "$total_reparations"] }, 100] },
+                1
+              ]
+            },
+            0
+          ]
+        }
+      }
+    },
+    { $sort: { total_sav: -1, taux_sav: -1 } }
+  ]);
+
+  console.log("🔍 [getReparateurs] Réparateurs calculés:", 
+    reparateurs.map(r => ({ nom: r.nom, total_sav: r.total_sav }))
+  );
+
+  const topRetours = reparateurs.slice(0, 10).map((r) => ({
+    nom: r.nom || "Non assigné",
+    total_sav: r.total_sav,
+    taux_sav: r.taux_sav,
+  }));
+
+  const totalReparationsGlobal = reparateurs.reduce((s, r) => s + r.total_reparations, 0);
+  const totalSAVGlobal = reparateurs.reduce((s, r) => s + r.total_sav, 0);
+  const tauxSAVGlobal = totalReparationsGlobal > 0
+    ? Math.round((totalSAVGlobal / totalReparationsGlobal) * 1000) / 10
+    : 0;
+
+  const pireReparateur =
+    reparateurs.length > 0 && reparateurs[0].total_sav > 0
+      ? reparateurs[0]
+      : null;
+
+  return {
+    reparateurs: reparateurs.map((r) => ({
+      ...r,
+      nom: r.nom || "Non assigné",
+    })),
+    top_retours: topRetours,
+    total_reparateurs: reparateurs.length,
+    taux_sav_global: tauxSAVGlobal,
+    pire_reparateur: pireReparateur
+      ? {
+          nom: pireReparateur.nom,
+          total_sav: pireReparateur.total_sav,
+          taux_sav: pireReparateur.taux_sav,
+        }
+      : null,
+  };
+};  

@@ -111,3 +111,15 @@ exports.getAppareils = async (req, res) => {
     res.status(500).json({ message: "Erreur lors du chargement des statistiques par appareil" });
   }
 };
+
+
+exports.getReparateurs = async (req, res) => {
+  try {
+    const { from, to } = getPeriod(req);
+    const data = await statistiquesService.getReparateurs(from, to);
+    res.json(data);
+  } catch (error) {
+    console.error("Erreur getReparateurs:", error);
+    res.status(500).json({ message: "Erreur lors du chargement des stats réparateurs" });
+  }
+};

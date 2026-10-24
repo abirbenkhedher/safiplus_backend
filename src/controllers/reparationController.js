@@ -87,7 +87,7 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
   try {
     const repWithClient = await Reparation.findById(reparationId).populate(
       'client',
-      'nom phone phone2 email code codeFidelite'  // ✅ codeFidelite ajouté
+      'nom phone phone2 email code codeFidelite'
     );
 
     if (!repWithClient) {
@@ -291,7 +291,7 @@ exports.getAll = async (req, res) => {
               { phone: { $regex: search, $options: 'i' } },
               { phone2: { $regex: search, $options: 'i' } },
               { code: { $regex: search, $options: 'i' } },
-              { codeFidelite: { $regex: search, $options: 'i' } },  // ✅ codeFidelite
+              { codeFidelite: { $regex: search, $options: 'i' } },
               { adresse: { $regex: search, $options: 'i' } },
               { zone: { $regex: search, $options: 'i' } },
             ],
@@ -329,7 +329,7 @@ exports.getAll = async (req, res) => {
 
     const [reparations, total] = await Promise.all([
       Reparation.find(query)
-        .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')  // ✅ codeFidelite
+        .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')
         .populate('status', 'label color parDefault')
         .populate({
           path: 'categorie',
@@ -345,6 +345,7 @@ exports.getAll = async (req, res) => {
         .populate('createdBy', 'username firstName lastName')
         .populate('representant', 'username firstName lastName')
         .populate('reparateur', 'username firstName lastName')
+        .populate('reparateurSAV', 'username firstName lastName')
         .populate(
           'diagnosticImprevus.imprevus.decisionPar',
           'username firstName lastName'
@@ -394,7 +395,7 @@ exports.getAll = async (req, res) => {
 exports.getOne = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
       .populate('status', 'label color parDefault')
       .populate({
         path: 'categorie',
@@ -410,6 +411,7 @@ exports.getOne = async (req, res) => {
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
+      .populate('reparateurSAV', 'username firstName lastName')
       .populate('modifications.modifiedBy', 'username firstName lastName')
       .populate(
         'diagnosticImprevus.imprevus.decisionPar',
@@ -461,7 +463,7 @@ exports.getPublicByNumero = async (req, res) => {
     }
 
     const reparation = await Reparation.findOne({ numero, isDeleted: false })
-      .populate('client', 'nom phone phone2 codeFidelite adresse')  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 codeFidelite adresse')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -496,7 +498,7 @@ exports.getPublicByNumero = async (req, res) => {
           nom: reparation.client?.nom || 'N/A',
           phone: reparation.client?.phone,
           phone2: reparation.client?.phone2,
-          codeFidelite: reparation.client?.codeFidelite,  // ✅ codeFidelite
+          codeFidelite: reparation.client?.codeFidelite,
           adresse: reparation.client?.adresse,
         },
         objet: reparation.objet?.nom,
@@ -552,7 +554,8 @@ exports.create = async (req, res) => {
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
-      representant, reparateur, datePrevisionnelle, isReparable, isNotified,
+      representant, reparateur, reparateurSAV,  // ✅ AJOUT
+      datePrevisionnelle, isReparable, isNotified,
     } = req.body;
 
     const clientExists = await Client.findById(client);
@@ -638,6 +641,7 @@ exports.create = async (req, res) => {
       createdBy: req.user.id,
       representant: representant || req.user.id,
       reparateur: reparateur || null,
+      reparateurSAV: reparateurSAV || null,  // ✅ AJOUT
       datePrevisionnelle: datePrevisionnelle || null,
       isReparable: isReparable !== undefined ? isReparable : true,
       isNotified: isNotified !== undefined ? isNotified : false,
@@ -655,7 +659,7 @@ exports.create = async (req, res) => {
     await syncPannesWithCategories(cleanPanneTypes, categorie);
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -671,6 +675,7 @@ exports.create = async (req, res) => {
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
+      .populate('reparateurSAV', 'username firstName lastName')  // ✅ AJOUT
       .populate('modifications.modifiedBy', 'username firstName lastName')
       .populate(
         'diagnosticImprevus.imprevus.decisionPar',
@@ -725,7 +730,8 @@ exports.update = async (req, res) => {
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
-      representant, reparateur, datePrevisionnelle, isReparable, isNotified,
+      representant, reparateur, reparateurSAV,  // ✅ AJOUT
+      datePrevisionnelle, isReparable, isNotified,
       envoyerSMS = false,
     } = req.body;
 
@@ -806,6 +812,7 @@ exports.update = async (req, res) => {
       acompte: reparation.acompte,
       status: reparation.status,
       reparateur: reparation.reparateur,
+      reparateurSAV: reparation.reparateurSAV,  // ✅ AJOUT
       datePrevisionnelle: reparation.datePrevisionnelle,
       isReparable: reparation.isReparable,
       isNotified: reparation.isNotified,
@@ -843,6 +850,7 @@ exports.update = async (req, res) => {
     reparation.status = status || reparation.status;
     reparation.representant = representant || reparation.representant;
     reparation.reparateur = reparateur !== undefined ? reparateur : reparation.reparateur;
+    reparation.reparateurSAV = reparateurSAV !== undefined ? reparateurSAV : reparation.reparateurSAV;  // ✅ AJOUT
     reparation.datePrevisionnelle = datePrevisionnelle !== undefined ? datePrevisionnelle : reparation.datePrevisionnelle;
     reparation.isReparable = isReparable !== undefined ? isReparable : reparation.isReparable;
     reparation.isNotified = isNotified !== undefined ? isNotified : reparation.isNotified;
@@ -907,7 +915,8 @@ exports.update = async (req, res) => {
 
     const trackedFields = [
       'client',
-      'prix', 'acompte', 'status', 'reparateur', 'problemeDeclare',
+      'prix', 'acompte', 'status', 'reparateur', 'reparateurSAV',  // ✅ AJOUT
+      'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
       'datePrevisionnelle',
       'categorie', 'objet', 'observation',
@@ -998,7 +1007,7 @@ exports.update = async (req, res) => {
     }
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -1014,6 +1023,7 @@ exports.update = async (req, res) => {
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
+      .populate('reparateurSAV', 'username firstName lastName')  // ✅ AJOUT
       .populate('modifications.modifiedBy', 'username firstName lastName')
       .populate(
         'diagnosticImprevus.imprevus.decisionPar',
@@ -1055,7 +1065,7 @@ exports.changeStatus = async (req, res) => {
     const { status, comment, envoyerSMS = false } = req.body;
 
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite');  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 email code codeFidelite');
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -1214,7 +1224,7 @@ exports.delete = async (req, res) => {
 exports.generatePDF = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -1229,7 +1239,8 @@ exports.generatePDF = async (req, res) => {
       .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName');
+      .populate('reparateur', 'username firstName lastName')
+      .populate('reparateurSAV', 'username firstName lastName');  // ✅ AJOUT
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -1262,7 +1273,7 @@ exports.generatePDF = async (req, res) => {
 exports.getTicketHTML = async (req, res) => {
   try {
     const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')  // ✅ codeFidelite
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
       .populate('status', 'label color')
       .populate({
         path: 'categorie',
@@ -1277,7 +1288,8 @@ exports.getTicketHTML = async (req, res) => {
       .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName');
+      .populate('reparateur', 'username firstName lastName')
+      .populate('reparateurSAV', 'username firstName lastName');  // ✅ AJOUT
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });

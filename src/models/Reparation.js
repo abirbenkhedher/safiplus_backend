@@ -111,6 +111,11 @@ const reparationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  reparateurSAV: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'User',
+  default: null,
+},
   dateReception: {
     type: Date,
     default: Date.now
@@ -132,6 +137,17 @@ const reparationSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // ✅ NOUVEAU : Tracking SAV
+savOrigine: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Reparation',
+  default: null,
+},
+isSAV: {
+  type: Boolean,
+  default: false,
+  index: true,
+},
 
   // ============================================================
   // ✅ GESTION DES DIAGNOSTICS ET IMPRÉVUS

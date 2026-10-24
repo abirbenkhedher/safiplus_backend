@@ -145,6 +145,7 @@ const formatFilters = (filters = {}) => {
     objet: 'Objet',
     marque: 'Marque',
     modele: 'Modèle',
+    periode: 'Période',
   };
 
   const valueLabels = {
@@ -167,33 +168,33 @@ const formatFilters = (filters = {}) => {
   return parts.length > 0 ? parts.join(' | ') : null;
 };
 
+
 // ============================================
-// EXPORT RÉPARATIONS
+// ✅ EXPORT RÉPARATIONS (avec Réparateur SAV)
 // ============================================
 const exportReparations = async (reparations, filters = {}) => {
   const workbook = createWorkbook();
   const worksheet = workbook.addWorksheet('Réparations');
 
+  // ✅ 20 colonnes — Ajout de "Réparateur SAV" après "Réparateur"
   const headers = [
     'N°', 'Date création', 'Client', 'Code client', 'Téléphone',
     'Zone', 'Catégorie', 'Objet', 'Marque', 'Modèle',
     'Problème', 'Statut', 'Prix (DT)', 'Acompte (DT)', 'Reste (DT)',
-    'Réparateur', 'Créé par', 'Date modification', 'Observation',
+    'Réparateur', 'Réparateur SAV', 'Créé par', 'Date modification', 'Observation',
   ];
 
   const widths = [
     15, 18, 20, 12, 15,
     15, 15, 15, 15, 15,
     30, 15, 12, 12, 12,
-    20, 20, 18, 30,
+    20, 20, 20, 18, 30,
   ];
 
   addTitle(
     worksheet,
     '📋 LISTE DES RÉPARATIONS',
-    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${
-      reparations.length
-    } réparation(s)`,
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${reparations.length} réparation(s)`,
     headers.length
   );
 
@@ -201,19 +202,12 @@ const exportReparations = async (reparations, filters = {}) => {
   setColumnWidths(worksheet, widths);
 
   const statusColors = {
-    'En attente': 'FFFFC107',
-    Diagnostic: 'FF17A2B8',
-    'En réparation': 'FF0D6EFD',
-    'En cours': 'FF0D6EFD',
-    Réparé: 'FF198754',
-    Livré: 'FF28A745',
-    'Non réparable': 'FFDC3545',
-    'Non réparé': 'FFDC3545',
-    Annulé: 'FF6C757D',
-    Prêt: 'FF20C997',
-    Devis: 'FF6F42C1',
-    'Attente validation': 'FFFD7E14',
-    SAV: 'FF8B5CF6',
+    'En attente': 'FFFFC107', Diagnostic: 'FF17A2B8',
+    'En réparation': 'FF0D6EFD', 'En cours': 'FF0D6EFD',
+    Réparé: 'FF198754', Livré: 'FF28A745',
+    'Non réparable': 'FFDC3545', 'Non réparé': 'FFDC3545',
+    Annulé: 'FF6C757D', Prêt: 'FF20C997', Devis: 'FF6F42C1',
+    'Attente validation': 'FFFD7E14', SAV: 'FF8B5CF6',
   };
 
   let totalPrix = 0;
@@ -233,6 +227,7 @@ const exportReparations = async (reparations, filters = {}) => {
       typeof rep.marque === 'object' && rep.marque !== null
         ? rep.marque.nom
         : rep.marque || 'N/A';
+
     const modeleNom =
       typeof rep.modele === 'object' && rep.modele !== null
         ? rep.modele.nom
@@ -242,11 +237,14 @@ const exportReparations = async (reparations, filters = {}) => {
       ? rep.panneType.join(', ')
       : rep.panneType || 'N/A';
 
+    // ✅ Formatage du Réparateur SAV
+    const reparateurSAVNom = rep.reparateurSAV
+      ? `${rep.reparateurSAV.firstName || ''} ${rep.reparateurSAV.lastName || ''}`.trim() || 'Non renseigné'
+      : '—';
+
     const rowData = [
       rep.numero || 'N/A',
-      rep.createdAt
-        ? new Date(rep.createdAt).toLocaleDateString('fr-FR')
-        : 'N/A',
+      rep.createdAt ? new Date(rep.createdAt).toLocaleDateString('fr-FR') : 'N/A',
       rep.client?.nom || 'N/A',
       rep.client?.code || 'N/A',
       rep.client?.phone || 'N/A',
@@ -263,42 +261,46 @@ const exportReparations = async (reparations, filters = {}) => {
       rep.reparateur
         ? `${rep.reparateur.firstName} ${rep.reparateur.lastName}`
         : 'Non assigné',
+      reparateurSAVNom,
       rep.createdBy
         ? `${rep.createdBy.firstName} ${rep.createdBy.lastName}`
         : 'N/A',
-      rep.updatedAt
-        ? new Date(rep.updatedAt).toLocaleDateString('fr-FR')
-        : 'N/A',
+      rep.updatedAt ? new Date(rep.updatedAt).toLocaleDateString('fr-FR') : 'N/A',
       rep.observation || '-',
     ];
 
     const row = worksheet.addRow(rowData);
     styleDataRow(row, index % 2 === 1);
 
+    // Colorer la colonne Statut (colonne 12)
     const statusCell = row.getCell(12);
     if (rep.status?.label && statusColors[rep.status.label]) {
       statusCell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
+        type: 'pattern', pattern: 'solid',
         fgColor: { argb: statusColors[rep.status.label] },
       };
-      statusCell.font = {
-        bold: true,
-        color: { argb: 'FFFFFFFF' },
-      };
-      statusCell.alignment = {
-        vertical: 'middle',
-        horizontal: 'center',
-      };
+      statusCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      statusCell.alignment = { vertical: 'middle', horizontal: 'center' };
     }
 
+    // Formater les montants (colonnes 13, 14, 15)
     [13, 14, 15].forEach((colIndex) => {
       const cell = row.getCell(colIndex);
       cell.numFmt = '#,##0.00" DT"';
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
     });
+
+    // ✅ Mettre en évidence le Réparateur SAV (colonne 17) en orange
+    const savCell = row.getCell(17);
+    if (rep.reparateurSAV) {
+      savCell.font = { bold: true, color: { argb: 'FFD97706' } };
+    } else {
+      savCell.font = { italic: true, color: { argb: 'FF9CA3AF' } };
+    }
+    savCell.alignment = { vertical: 'middle', horizontal: 'center' };
   });
 
+  // Ligne des totaux
   if (reparations.length > 0) {
     const totalRowData = new Array(headers.length).fill('');
     totalRowData[11] = 'TOTAUX';
@@ -311,8 +313,7 @@ const exportReparations = async (reparations, filters = {}) => {
     totalRow.eachCell((cell) => {
       cell.font = { bold: true, size: 11 };
       cell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
+        type: 'pattern', pattern: 'solid',
         fgColor: { argb: 'FFE7F1FF' },
       };
       cell.border = {
@@ -323,10 +324,7 @@ const exportReparations = async (reparations, filters = {}) => {
       };
     });
 
-    totalRow.getCell(12).alignment = {
-      vertical: 'middle',
-      horizontal: 'center',
-    };
+    totalRow.getCell(12).alignment = { vertical: 'middle', horizontal: 'center' };
 
     [13, 14, 15].forEach((colIndex) => {
       const cell = totalRow.getCell(colIndex);
@@ -335,17 +333,13 @@ const exportReparations = async (reparations, filters = {}) => {
     });
   }
 
+  // Filtres appliqués
   const activeFilters = formatFilters(filters);
-
   if (activeFilters) {
     worksheet.addRow([]);
     const filterRow = worksheet.addRow([`Filtres appliqués: ${activeFilters}`]);
     worksheet.mergeCells(filterRow.number, 1, filterRow.number, headers.length);
-    filterRow.getCell(1).font = {
-      italic: true,
-      size: 9,
-      color: { argb: 'FF6C757D' },
-    };
+    filterRow.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6C757D' } };
   }
 
   worksheet.views = [{ state: 'frozen', ySplit: 4 }];
@@ -930,14 +924,176 @@ const exportCategories = async (categories, filters = {}) => {
   return workbook;
 };
 
+// ============================================
+// ✅ NOUVEAU : EXPORT RÉPARATEURS (Statistiques SAV)
+// ============================================
+const exportReparateurs = async (reparateurs, filters = {}, topRetours = []) => {
+  const workbook = createWorkbook();
+  const worksheet = workbook.addWorksheet('Réparateurs');
+
+  const headers = [
+    'Réparateur', 'Rôle', 'Nb réparations', 'SAV (retours)',
+    'Taux SAV (%)', 'CA généré (DT)', 'Encaissé (DT)', 'Reste (DT)',
+  ];
+
+  const widths = [25, 15, 14, 14, 14, 16, 16, 16];
+
+  addTitle(
+    worksheet,
+    '👨‍🔧 STATISTIQUES PAR RÉPARATEUR',
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${reparateurs.length} réparateur(s)`,
+    headers.length
+  );
+
+  addHeader(worksheet, headers);
+  setColumnWidths(worksheet, widths);
+
+  let totalNb = 0, totalSav = 0, totalCA = 0, totalEncaisse = 0, totalReste = 0;
+
+  reparateurs.forEach((row, index) => {
+    const nb = row.total_reparations || 0;
+    const sav = row.total_sav || 0;
+    const taux = row.taux_sav || 0;
+    const ca = row.ca_total || 0;
+    const encaisse = row.encaisse || 0;
+    const reste = row.reste || 0;
+
+    totalNb += nb;
+    totalSav += sav;
+    totalCA += ca;
+    totalEncaisse += encaisse;
+    totalReste += reste;
+
+    const dataRow = worksheet.addRow([
+      row.nom || '—',
+      row.role || '—',
+      nb,
+      sav,
+      taux,
+      ca,
+      encaisse,
+      reste,
+    ]);
+    styleDataRow(dataRow, index % 2 === 1);
+
+    // Centrer Nb / SAV / Taux
+    [3, 4, 5].forEach((col) => {
+      dataRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+
+    // ✅ Couleur conditionnelle du taux SAV
+    const tauxCell = dataRow.getCell(5);
+    tauxCell.numFmt = '0.00"%"';
+    tauxCell.font = { bold: true };
+    if (taux >= 30) {
+      tauxCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8D7DA' } };
+      tauxCell.font = { ...tauxCell.font, color: { argb: 'FFDC3545' } };
+    } else if (taux >= 15) {
+      tauxCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3CD' } };
+      tauxCell.font = { ...tauxCell.font, color: { argb: 'FFB8860B' } };
+    } else if (taux >= 5) {
+      tauxCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1ECF1' } };
+      tauxCell.font = { ...tauxCell.font, color: { argb: 'FF17A2B8' } };
+    } else {
+      tauxCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD4EDDA' } };
+      tauxCell.font = { ...tauxCell.font, color: { argb: 'FF198754' } };
+    }
+
+    // Colorer la cellule SAV si > 0
+    const savCell = dataRow.getCell(4);
+    if (sav > 0) {
+      savCell.font = { bold: true, color: { argb: 'FFDC3545' } };
+    }
+
+    // Formater les montants (colonnes 6, 7, 8)
+    [6, 7, 8].forEach((col) => {
+      const cell = dataRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  });
+
+  // Ligne des totaux
+  if (reparateurs.length > 0) {
+    const tauxGlobal = totalNb > 0
+      ? Math.round((totalSav / totalNb) * 10000) / 100
+      : 0;
+
+    const totalRowData = [
+      'TOTAUX', '',
+      totalNb, totalSav, tauxGlobal,
+      totalCA, totalEncaisse, totalReste,
+    ];
+
+    const totalRow = worksheet.addRow(totalRowData);
+    totalRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 11 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE7F1FF' } };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        bottom: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+        right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+      };
+    });
+
+    [3, 4, 5].forEach((col) => {
+      totalRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    totalRow.getCell(5).numFmt = '0.00"%"';
+    [6, 7, 8].forEach((col) => {
+      const cell = totalRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  }
+
+  // Filtres appliqués
+  const activeFilters = formatFilters(filters);
+  if (activeFilters) {
+    worksheet.addRow([]);
+    const filterRow = worksheet.addRow([`Filtres appliqués: ${activeFilters}`]);
+    worksheet.mergeCells(filterRow.number, 1, filterRow.number, headers.length);
+    filterRow.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6C757D' } };
+  }
+
+  worksheet.views = [{ state: 'frozen', ySplit: 4 }];
+
+  // ✅ Feuille secondaire : Top retours SAV (optionnel)
+  if (Array.isArray(topRetours) && topRetours.length > 0) {
+    const ws2 = workbook.addWorksheet('Top retours SAV');
+    addTitle(ws2, '🔄 TOP 10 RETOURS SAV', `Exporté le ${new Date().toLocaleString('fr-FR')}`, 4);
+    addHeader(ws2, ['Réparateur', 'Retours SAV', 'Taux SAV (%)', 'Nb réparations']);
+    setColumnWidths(ws2, [28, 15, 15, 15]);
+
+    topRetours.forEach((r, i) => {
+      const row = ws2.addRow([
+        r.nom || '—',
+        r.total_sav || 0,
+        r.taux_sav || 0,
+        r.total_reparations || 0,
+      ]);
+      styleDataRow(row, i % 2 === 1);
+      [2, 3, 4].forEach((col) => {
+        row.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' };
+      });
+      row.getCell(3).numFmt = '0.00"%"';
+    });
+
+    ws2.views = [{ state: 'frozen', ySplit: 4 }];
+  }
+
+  return workbook;
+};
+
 module.exports = {
   exportReparations,
   exportClients,
   exportUsers,
   exportHistory,
-  exportAppareils,  // ✅ NOUVEAU
+  exportAppareils,
   exportCategories,
   exportFamilles,
+  exportReparateurs, // ✅ NOUVEAU
   sendWorkbook,
-
 };

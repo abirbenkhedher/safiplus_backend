@@ -11,15 +11,8 @@ const logger = require('../config/logger');
 exports.exportReparations = async (req, res) => {
   try {
     const {
-      search,
-      status,
-      categorie,
-      client,
-      reparateur,
-      createdBy,
-      dateDebut,
-      dateFin,
-      zone,
+      search, status, categorie, client, reparateur, createdBy,
+      dateDebut, dateFin, zone,
     } = req.query;
 
     const query = { isDeleted: false };
@@ -41,8 +34,7 @@ exports.exportReparations = async (req, res) => {
         query.client = { $in: clientIds };
       } else {
         return res.json({
-          success: true,
-          data: [],
+          success: true, data: [],
           pagination: { total: 0, page: 1, pages: 0 },
         });
       }
@@ -67,7 +59,7 @@ exports.exportReparations = async (req, res) => {
     }
 
     const reparations = await Reparation.find(query)
-      .populate('client', 'nom phone phone2 email code adresse zone')
+      .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')
       .populate('status', 'label color')
       .populate('categorie', 'nom')
       .populate('objet', 'nom')
@@ -75,6 +67,7 @@ exports.exportReparations = async (req, res) => {
       .populate('modele', 'nom')
       .populate('createdBy', 'username firstName lastName')
       .populate('reparateur', 'username firstName lastName')
+      .populate('reparateurSAV', 'username firstName lastName')
       .sort({ createdAt: -1 });
 
     const filters = {
@@ -86,15 +79,10 @@ exports.exportReparations = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel réparations: ${reparations.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel réparations: ${reparations.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportReparations:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
@@ -112,23 +100,15 @@ exports.exportReparationsPost = async (req, res) => {
       });
     }
 
-    const workbook = await excelService.exportReparations(
-      reparations,
-      filters || {}
-    );
+    const workbook = await excelService.exportReparations(reparations, filters || {});
     const filename = `reparations_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel réparations (POST): ${reparations.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel réparations (POST): ${reparations.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportReparationsPost:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
@@ -140,27 +120,16 @@ exports.exportClients = async (req, res) => {
     const { search, isActive } = req.query;
     const query = {};
 
-    if (isActive !== undefined) {
-      query.isActive = isActive === 'true';
-    }
-
-    if (search) {
-      query.$text = { $search: search };
-    }
+    if (isActive !== undefined) query.isActive = isActive === 'true';
+    if (search) query.$text = { $search: search };
 
     const clients = await Client.find(query).sort({ createdAt: -1 });
 
     const clientsWithStats = await Promise.all(
       clients.map(async (client) => {
-        const reparations = await Reparation.find({
-          client: client._id,
-          isDeleted: false,
-        });
+        const reparations = await Reparation.find({ client: client._id, isDeleted: false });
         const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
-        const totalRestant = reparations.reduce(
-          (sum, r) => sum + (r.prix - r.acompte),
-          0
-        );
+        const totalRestant = reparations.reduce((sum, r) => sum + (r.prix - r.acompte), 0);
 
         return {
           ...client.toObject(),
@@ -176,15 +145,10 @@ exports.exportClients = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel clients: ${clients.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel clients: ${clients.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportClients:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
@@ -213,15 +177,9 @@ exports.exportClientsPost = async (req, res) => {
         }
 
         const clientId = client._id || client.id;
-        const reparations = await Reparation.find({
-          client: clientId,
-          isDeleted: false,
-        });
+        const reparations = await Reparation.find({ client: clientId, isDeleted: false });
         const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
-        const totalRestant = reparations.reduce(
-          (sum, r) => sum + (r.prix - r.acompte),
-          0
-        );
+        const totalRestant = reparations.reduce((sum, r) => sum + (r.prix - r.acompte), 0);
 
         return {
           ...client,
@@ -232,23 +190,15 @@ exports.exportClientsPost = async (req, res) => {
       })
     );
 
-    const workbook = await excelService.exportClients(
-      clientsWithStats,
-      filters || {}
-    );
+    const workbook = await excelService.exportClients(clientsWithStats, filters || {});
     const filename = `clients_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel clients (POST): ${clients.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel clients (POST): ${clients.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportClientsPost:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
@@ -257,9 +207,7 @@ exports.exportClientsPost = async (req, res) => {
 // ============================================================
 exports.exportUsers = async (req, res) => {
   try {
-    const users = await User.find()
-      .select('-password -refreshToken')
-      .sort({ createdAt: -1 });
+    const users = await User.find().select('-password -refreshToken').sort({ createdAt: -1 });
 
     const usersWithStats = await Promise.all(
       users.map(async (user) => {
@@ -268,10 +216,7 @@ exports.exportUsers = async (req, res) => {
           isDeleted: false,
         });
 
-        return {
-          ...user.toObject(),
-          reparationsCount,
-        };
+        return { ...user.toObject(), reparationsCount };
       })
     );
 
@@ -280,15 +225,10 @@ exports.exportUsers = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel utilisateurs: ${users.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel utilisateurs: ${users.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportUsers:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
@@ -321,20 +261,15 @@ exports.exportHistory = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel historique: ${history.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel historique: ${history.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportHistory:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
 // ============================================================
-// ✅ NOUVEAU : POST - Export Excel des appareils (statistiques)
+// POST - Export Excel des appareils
 // ============================================================
 exports.exportAppareils = async (req, res) => {
   try {
@@ -352,20 +287,15 @@ exports.exportAppareils = async (req, res) => {
 
     await excelService.sendWorkbook(res, workbook, filename);
 
-    logger.info(
-      `Export Excel appareils: ${appareils.length} lignes par ${req.user.username}`
-    );
+    logger.info(`Export Excel appareils: ${appareils.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportAppareils:', error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'export Excel",
-    });
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
 
 // ============================================================
-// ✅ NOUVEAU : POST - Export Excel des familles
+// POST - Export Excel des familles
 // ============================================================
 exports.exportFamilles = async (req, res) => {
   try {
@@ -384,7 +314,7 @@ exports.exportFamilles = async (req, res) => {
 };
 
 // ============================================================
-// ✅ NOUVEAU : POST - Export Excel des catégories
+// POST - Export Excel des catégories
 // ============================================================
 exports.exportCategories = async (req, res) => {
   try {
@@ -398,6 +328,36 @@ exports.exportCategories = async (req, res) => {
     logger.info(`Export Excel catégories: ${categories.length} lignes par ${req.user.username}`);
   } catch (error) {
     logger.error('Erreur exportCategories:', error);
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
+  }
+};
+
+// ============================================================
+// ✅ NOUVEAU : POST - Export Excel des réparateurs (statistiques)
+// ============================================================
+exports.exportReparateursPost = async (req, res) => {
+  try {
+    const { reparateurs, filters, topRetours } = req.body;
+
+    if (!Array.isArray(reparateurs)) {
+      return res.status(400).json({
+        success: false,
+        message: 'La liste des réparateurs est requise',
+      });
+    }
+
+    const workbook = await excelService.exportReparateurs(
+      reparateurs,
+      filters || {},
+      Array.isArray(topRetours) ? topRetours : []
+    );
+    const filename = `reparateurs_stats_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    await excelService.sendWorkbook(res, workbook, filename);
+
+    logger.info(`Export Excel réparateurs: ${reparateurs.length} lignes par ${req.user.username}`);
+  } catch (error) {
+    logger.error('Erreur exportReparateursPost:', error);
     res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };

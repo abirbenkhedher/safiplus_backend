@@ -24,5 +24,6 @@ router.get("/export", statistiquesController.exportData);
 // Route 6 : appareils
 
 router.get("/appareils", statistiquesController.getAppareils);
+router.get("/reparateurs", statistiquesController.getReparateurs);
 
 module.exports = router;
