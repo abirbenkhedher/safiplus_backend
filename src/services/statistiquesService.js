@@ -287,14 +287,18 @@ exports.getCategories = async (from, to) => {
 exports.getReparations = async (from, to) => {
   const match = buildMatch(from, to);
 
+  // ============================================================
   // 1. KPI Nombre de réparations
+  // ============================================================
   const kpis = await Reparation.aggregate([
     { $match: match },
     { $group: { _id: null, nb_reparations: { $sum: 1 } } }
   ]);
   const current = kpis[0] || { nb_reparations: 0 };
 
-  // 2. Calcul du délai moyen basé sur le PREMIER changement de statut
+  // ============================================================
+  // 2. Calcul du délai moyen (premier changement de statut)
+  // ============================================================
   const delais = await Reparation.aggregate([
     { $match: match },
     {
@@ -333,18 +337,58 @@ exports.getReparations = async (from, to) => {
 
   const delaiMoyen = delais[0]?.delai_moyen || 0;
 
-  // 3. Taux de réussite (basé sur les statuts contenant "REPARE")
-  const statutsSucces = await Status.find({ label: { $regex: /REPARE/i } });
-  const statutSuccesIds = statutsSucces.map(s => s._id);
-  const succesCount = await Reparation.countDocuments({ 
-    ...match, 
-    status: { $in: statutSuccesIds } 
+  // ============================================================
+  // 3. Taux de réussite / échec (✅ CORRIGÉ — aligné avec getStatuts)
+  // ============================================================
+  // Logique :
+  //   - "réussie" : contient "repare"/"réparé" SANS "non"
+  //     → repare, sortie repare, sav repare, sav sortie repare
+  //   - "échouée" : contient "non repare"/"non reparé"/"non réparé"
+  //     → non repare, sortie non repare, sav non repare, sav sortie non repare
+  //   - "ignorée" : statuts sans verdict (en cours, sav en cours)
+  const allStatuses = await Status.find({}).select('_id label').lean();
+
+  const reussiteStatusIds = allStatuses
+    .filter((s) => {
+      const l = (s.label || '').toLowerCase().trim();
+      return (l.includes('repare') || l.includes('réparé')) && !l.includes('non');
+    })
+    .map((s) => s._id);
+
+  const echecStatusIds = allStatuses
+    .filter((s) => {
+      const l = (s.label || '').toLowerCase().trim();
+      return (
+        l.includes('non repare') ||
+        l.includes('non reparé') ||
+        l.includes('non réparé')
+      );
+    })
+    .map((s) => s._id);
+
+  const reussiteCount = await Reparation.countDocuments({
+    ...match,
+    status: { $in: reussiteStatusIds },
   });
-  const taux_reussite = current.nb_reparations > 0 
-    ? (succesCount / current.nb_reparations) * 100 
+
+  const echecCount = await Reparation.countDocuments({
+    ...match,
+    status: { $in: echecStatusIds },
+  });
+
+  const termineCount = reussiteCount + echecCount;
+
+  const taux_reussite = termineCount > 0
+    ? (reussiteCount / termineCount) * 100
     : 0;
 
+  const taux_echec = termineCount > 0
+    ? (echecCount / termineCount) * 100
+    : 0;
+
+  // ============================================================
   // 4. Période précédente pour les variations
+  // ============================================================
   const prevDates = getPreviousPeriod(from, to);
   const prevMatch = buildMatch(prevDates.from, prevDates.to);
 
@@ -392,12 +436,22 @@ exports.getReparations = async (from, to) => {
   ]);
   const prevDelaiMoyen = prevDelais[0]?.delai_moyen || 0;
 
-  // Taux de réussite période précédente
-  const prevSuccesCount = await Reparation.countDocuments({ 
-    ...prevMatch, 
-    status: { $in: statutSuccesIds } 
+  // ✅ Taux de réussite période précédente (même logique corrigée)
+  const prevReussiteCount = await Reparation.countDocuments({
+    ...prevMatch,
+    status: { $in: reussiteStatusIds },
   });
-  const prevTauxReussite = prev.nb_reparations > 0 ? (prevSuccesCount / prev.nb_reparations) * 100 : 0;
+
+  const prevEchecCount = await Reparation.countDocuments({
+    ...prevMatch,
+    status: { $in: echecStatusIds },
+  });
+
+  const prevTermineCount = prevReussiteCount + prevEchecCount;
+
+  const prevTauxReussite = prevTermineCount > 0
+    ? (prevReussiteCount / prevTermineCount) * 100
+    : 0;
 
   const variations = {
     nb_reparations: calcVariation(current.nb_reparations, prev.nb_reparations),
@@ -406,10 +460,8 @@ exports.getReparations = async (from, to) => {
   };
 
   // ============================================================
-  // ✅ NOUVEAUX TOPS (remplacent par_etat)
-  // ============================================================
-
   // 5. Top Catégories
+  // ============================================================
   const topCategories = await Reparation.aggregate([
     { $match: match },
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "catData" } },
@@ -420,7 +472,9 @@ exports.getReparations = async (from, to) => {
     { $project: { _id: 0, nom: "$_id", count: 1 } }
   ]);
 
+  // ============================================================
   // 6. Top Objets
+  // ============================================================
   const topObjets = await Reparation.aggregate([
     { $match: match },
     { $lookup: { from: "objets", localField: "objet", foreignField: "_id", as: "objData" } },
@@ -431,7 +485,9 @@ exports.getReparations = async (from, to) => {
     { $project: { _id: 0, nom: "$_id", count: 1 } }
   ]);
 
+  // ============================================================
   // 7. Top Marques
+  // ============================================================
   const topMarques = await Reparation.aggregate([
     { $match: match },
     { $lookup: { from: "marques", localField: "marque", foreignField: "_id", as: "marqueData" } },
@@ -442,7 +498,9 @@ exports.getReparations = async (from, to) => {
     { $project: { _id: 0, nom: "$_id", count: 1 } }
   ]);
 
+  // ============================================================
   // 8. Top Modèles
+  // ============================================================
   const topModeles = await Reparation.aggregate([
     { $match: match },
     { $lookup: { from: "modeles", localField: "modele", foreignField: "_id", as: "modeleData" } },
@@ -453,7 +511,9 @@ exports.getReparations = async (from, to) => {
     { $project: { _id: 0, nom: "$_id", count: 1 } }
   ]);
 
-  // 9. Par Type d'appareil (pour le camembert)
+  // ============================================================
+  // 9. Par Type d'appareil (camembert)
+  // ============================================================
   const parType = await Reparation.aggregate([
     { $match: match },
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "catData" } },
@@ -464,7 +524,9 @@ exports.getReparations = async (from, to) => {
     { $project: { _id: 0, type: "$_id", count: 1 } }
   ]);
 
+  // ============================================================
   // 10. Par Jour de la semaine
+  // ============================================================
   const parJourRaw = await Reparation.aggregate([
     { $match: match },
     { $group: { _id: { $dayOfWeek: { $ifNull: ["$dateReception", "$createdAt"] } }, count: { $sum: 1 } } },
@@ -473,20 +535,36 @@ exports.getReparations = async (from, to) => {
   const joursMap = { 1: "Dim", 2: "Lun", 3: "Mar", 4: "Mer", 5: "Jeu", 6: "Ven", 7: "Sam" };
   const parJour = parJourRaw.map(j => ({ jour: joursMap[j._id], count: j.count }));
 
+  // ============================================================
+  // ✅ RETOUR
+  // ============================================================
   return {
+    // ---- KPI ----
     nb_reparations: current.nb_reparations,
     delai_moyen: Math.round(delaiMoyen * 10) / 10,
+
+    // ---- Taux (✅ corrigés) ----
     taux_reussite: Math.round(taux_reussite * 10) / 10,
+    taux_echec: Math.round(taux_echec * 10) / 10,   // ✅ NOUVEAU
+
+    // ---- Compteurs debug (✅ NOUVEAU) ----
+    nb_reussite: reussiteCount,
+    nb_echec: echecCount,
+    nb_termine: termineCount,
+
+    // ---- Variations ----
     variations,
+
+    // ---- Tops ----
     top_categories: topCategories,
     top_objets: topObjets,
     top_marques: topMarques,
     top_modeles: topModeles,
-    par_type: parType,
-    par_jour: parJour
-  };
 
-  
+    // ---- Graphiques ----
+    par_type: parType,
+    par_jour: parJour,
+  };
 };
 
 // ============================================================
@@ -714,3 +792,199 @@ exports.getReparateurs = async (from, to) => {
       : null,
   };
 };  
+
+
+// ============================================================
+// 6. STATUTS (Statistiques par statut)
+// ============================================================
+exports.getStatuts = async (from, to) => {
+  const match = buildMatch(from, to);
+  const prixTotalExpr = getPrixTotalExpr();
+
+  // 1. Récupérer tous les statuts
+  const allStatuses = await Status.find({}).select('_id label color').lean();
+
+  // 2. Agréger les réparations par statut
+  const agg = await Reparation.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: '$status',
+        nb_reparations: { $sum: 1 },
+        ca: { $sum: prixTotalExpr },
+        encaisse: { $sum: { $ifNull: ['$acompte', 0] } },
+      },
+    },
+  ]);
+
+  // 3. Construire la table par statut
+  let totalReparations = 0;
+  let totalCA = 0;
+  let totalEncaisse = 0;
+
+  const table = allStatuses.map((s) => {
+    const found = agg.find((a) => a._id?.toString() === s._id.toString());
+    const nb = found?.nb_reparations || 0;
+    const ca = found?.ca || 0;
+    const encaisse = found?.encaisse || 0;
+
+    totalReparations += nb;
+    totalCA += ca;
+    totalEncaisse += encaisse;
+
+    return {
+      statusId: s._id.toString(),
+      label: s.label,
+      color: s.color || '#6C757D',
+      nb_reparations: nb,
+      ca,
+      encaisse,
+      reste: ca - encaisse,
+      percentage: 0, // rempli après
+    };
+  });
+
+  // 4. Calculer les pourcentages
+  table.forEach((row) => {
+    row.percentage = totalReparations > 0
+      ? Math.round((row.nb_reparations / totalReparations) * 1000) / 10
+      : 0;
+  });
+
+  // 5. Regrouper en catégories métier
+  const categorize = (label) => {
+    const l = (label || '').toLowerCase().trim();
+    if (l.startsWith('sav')) return 'sav';
+    if (l.includes('en cours')) return 'en_cours';
+    if (l.includes('sortie') && l.includes('non')) return 'sortie_non_repare';
+    if (l.includes('sortie') && (l.includes('repare') || l.includes('réparé'))) return 'sortie_repare';
+    if (l.includes('non repare') || l.includes('non reparé') || l.includes('non réparé')) return 'non_repare';
+    if (l.includes('repare') || l.includes('réparé')) return 'repare';
+    return 'autre';
+  };
+
+  const groupDefs = {
+    en_cours: { label: '🔧 En cours', color: '#0D6EFD' },
+    repare: { label: '✅ Réparé', color: '#198754' },
+    non_repare: { label: '❌ Non réparé', color: '#DC3545' },
+    sortie_repare: { label: '📤 Sortie réparé', color: '#20C997' },
+    sortie_non_repare: { label: '📤 Sortie non réparé', color: '#6C757D' },
+    sav: { label: '🔄 SAV', color: '#8B5CF6' },
+    autre: { label: '❓ Autre', color: '#9CA3AF' },
+  };
+
+  const groups = {};
+  Object.keys(groupDefs).forEach((k) => {
+    groups[k] = { key: k, ...groupDefs[k], count: 0, ca: 0 };
+  });
+
+  table.forEach((row) => {
+    const g = categorize(row.label);
+    groups[g].count += row.nb_reparations;
+    groups[g].ca += row.ca;
+  });
+
+  const grouped = Object.values(groups)
+    .filter((g) => g.count > 0)
+    .map((g) => ({
+      ...g,
+      percentage: totalReparations > 0
+        ? Math.round((g.count / totalReparations) * 1000) / 10
+        : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // 6. Détail SAV
+  const savTable = table.filter((r) => r.label.toLowerCase().trim().startsWith('sav'));
+  const savTotal = savTable.reduce((s, r) => s + r.nb_reparations, 0);
+
+  const sav_breakdown = savTable.map((r) => ({
+    ...r,
+    percentage: savTotal > 0
+      ? Math.round((r.nb_reparations / savTotal) * 1000) / 10
+      : 0,
+  }));
+
+  // ============================================================
+  // 7. Taux de réussite / échec (✅ CORRIGÉ)
+  // ============================================================
+  // ✅ Logique métier :
+  //    - "réussie" : contient "repare" ou "réparé" SANS "non"
+  //      → inclut : repare, sortie repare, sav repare, sav sortie repare
+  //    - "échouée" : contient "non repare" / "non reparé" / "non réparé"
+  //      → inclut : non repare, sortie non repare, sav non repare, sav sortie non repare
+  //    - "ignorée" : statuts sans verdict (en cours, sav en cours)
+  // ============================================================
+  const reussiteCount = table
+    .filter((r) => {
+      const l = r.label.toLowerCase().trim();
+      const isRepare = l.includes('repare') || l.includes('réparé');
+      const isNonRepare = l.includes('non');
+      return isRepare && !isNonRepare;
+    })
+    .reduce((s, r) => s + r.nb_reparations, 0);
+
+  const echecCount = table
+    .filter((r) => {
+      const l = r.label.toLowerCase().trim();
+      return (
+        l.includes('non repare') ||
+        l.includes('non reparé') ||
+        l.includes('non réparé')
+      );
+    })
+    .reduce((s, r) => s + r.nb_reparations, 0);
+
+  const termineCount = reussiteCount + echecCount;
+
+  const taux_reussite = termineCount > 0
+    ? Math.round((reussiteCount / termineCount) * 1000) / 10
+    : 0;
+
+  const taux_echec = termineCount > 0
+    ? Math.round((echecCount / termineCount) * 1000) / 10
+    : 0;
+
+  // ============================================================
+  // 8. Nombre de sorties (livraisons au client)
+  // ============================================================
+  // ✅ Renommé nb_termine → nb_sorties pour plus de clarté
+  //    Compte tous les statuts contenant "sortie" (réparé ou non, SAV inclus)
+  const nb_sorties = table
+    .filter((r) => r.label.toLowerCase().includes('sortie'))
+    .reduce((s, r) => s + r.nb_reparations, 0);
+
+  // ============================================================
+  // 9. Taux SAV global
+  // ============================================================
+  const taux_sav = totalReparations > 0
+    ? Math.round((savTotal / totalReparations) * 1000) / 10
+    : 0;
+
+  // ============================================================
+  // ✅ RETOUR
+  // ============================================================
+  return {
+    // ---- KPI globaux ----
+    total_reparations: totalReparations,
+    total_ca: totalCA,
+    total_encaisse: totalEncaisse,
+    total_reste: totalCA - totalEncaisse,
+
+    // ---- Taux ----
+    taux_reussite,
+    taux_echec,
+    taux_sav,
+
+    // ---- Compteurs ----
+    nb_reussite: reussiteCount,   // ✅ NOUVEAU : utile pour debug
+    nb_echec: echecCount,         // ✅ NOUVEAU
+    nb_termine: termineCount,     // ✅ NOUVEAU : réussites + échecs
+    nb_sorties,                   // ✅ renommé (au lieu de nb_termine)
+
+    // ---- Détails ----
+    table,
+    grouped,
+    sav_breakdown,
+  };
+};

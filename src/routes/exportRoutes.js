@@ -18,11 +18,14 @@ router.post('/reparations', protect, exportController.exportReparationsPost);
 router.post('/clients', protect, exportController.exportClientsPost);
 
 // ============================================================
-// ✅ NOUVEAU : Route POST pour les appareils/famille / categorie et reparateur (statistiques)
+// ✅ Routes POST statistiques (appareils / familles / catégories / réparateurs)
 // ============================================================
 router.post('/appareils', protect, exportController.exportAppareils);
 router.post('/familles', protect, exportController.exportFamilles);
 router.post('/categories', protect, exportController.exportCategories);
 router.post('/reparateurs', protect, exportController.exportReparateursPost);
+
+// ✅ NOUVEAU : Statuts
+router.post('/statuts', protect, exportController.exportStatutsPost);
 
 module.exports = router;

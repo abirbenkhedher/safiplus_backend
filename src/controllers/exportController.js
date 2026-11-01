@@ -361,3 +361,30 @@ exports.exportReparateursPost = async (req, res) => {
     res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
   }
 };
+
+
+// ============================================================
+// ✅ NOUVEAU : POST - Export Excel des statuts (statistiques)
+// ============================================================
+exports.exportStatutsPost = async (req, res) => {
+  try {
+    const { statuts, filters } = req.body;
+
+    if (!Array.isArray(statuts)) {
+      return res.status(400).json({
+        success: false,
+        message: 'La liste des statuts est requise',
+      });
+    }
+
+    const workbook = await excelService.exportStatuts(statuts, filters || {});
+    const filename = `statuts_stats_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    await excelService.sendWorkbook(res, workbook, filename);
+
+    logger.info(`Export Excel statuts: ${statuts.length} lignes par ${req.user.username}`);
+  } catch (error) {
+    logger.error('Erreur exportStatutsPost:', error);
+    res.status(500).json({ success: false, message: "Erreur lors de l'export Excel" });
+  }
+};

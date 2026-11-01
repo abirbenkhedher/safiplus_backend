@@ -31,7 +31,6 @@ const reparationSchema = new mongoose.Schema({
   modele: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Modele',
-    // Optionnel : required si vous voulez forcer
   },
 
   accessoires: {
@@ -112,10 +111,10 @@ const reparationSchema = new mongoose.Schema({
     ref: 'User'
   },
   reparateurSAV: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: 'User',
-  default: null,
-},
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
   dateReception: {
     type: Date,
     default: Date.now
@@ -137,17 +136,18 @@ const reparationSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  // ✅ NOUVEAU : Tracking SAV
-savOrigine: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: 'Reparation',
-  default: null,
-},
-isSAV: {
-  type: Boolean,
-  default: false,
-  index: true,
-},
+
+  // ✅ Tracking SAV
+  savOrigine: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Reparation',
+    default: null,
+  },
+  isSAV: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
 
   // ============================================================
   // ✅ GESTION DES DIAGNOSTICS ET IMPRÉVUS
@@ -212,7 +212,7 @@ isSAV: {
   },
 
   // ============================================================
-  // ✅ NOUVEAU : HISTORIQUE DES SMS ENVOYÉS
+  // ✅ HISTORIQUE DES SMS ENVOYÉS
   // ============================================================
   smsEnvoyes: [{
     statut: {
@@ -258,6 +258,88 @@ isSAV: {
     type: Boolean,
     default: false
   },
+
+  // ============================================================
+  // ✅ PIÈCES DU STOCK CONSOMMÉES (avec cycle de vie complet)
+  // ============================================================
+  piecesStock: [{
+    stock: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Stock',
+      required: true,
+    },
+    snapshot: {
+      categorie: { type: String, default: '' },
+      objet: { type: String, default: '' },
+      typeArticle: { type: String, default: '' },
+      marque: { type: String, default: '' },
+      modele: { type: String, default: '' },
+    },
+    quantite: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    statut: {
+      type: String,
+      enum: ['consomme', 'restaure', 'annule'],
+      default: 'consomme',
+      index: true,
+    },
+    dateConsommation: {
+      type: Date,
+      default: Date.now,
+    },
+    consommePar: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    dateRestauration: {
+      type: Date,
+      default: null,
+    },
+    restaurePar: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    motifRestauration: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    dateAnnulation: {
+      type: Date,
+      default: null,
+    },
+    annulePar: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    motifAnnulation: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    mouvementStockId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MouvementStock',
+      default: null,
+    },
+    mouvementRestaurationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MouvementStock',
+      default: null,
+    },
+    mouvementAnnulationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MouvementStock',
+      default: null,
+    },
+  }],
+
   modifications: [{
     field: { type: String, required: true },
     oldValue: { type: mongoose.Schema.Types.Mixed },
@@ -284,20 +366,26 @@ function computePrixTotal(doc) {
 // ============================================================
 // VIRTUALS
 // ============================================================
-
-// ✅ Virtual : prix total (initial + imprévus acceptés)
 reparationSchema.virtual('prixTotal').get(function () {
   return computePrixTotal(this);
 });
 
-// ✅ Virtual : reste à payer (sur PRIX TOTAL)
 reparationSchema.virtual('reste').get(function () {
   return Math.max(0, computePrixTotal(this) - (Number(this.acompte) || 0));
 });
 
-// ✅ Virtual (alias) : reste total (pour compatibilité)
 reparationSchema.virtual('resteTotal').get(function () {
   return Math.max(0, computePrixTotal(this) - (Number(this.acompte) || 0));
+});
+
+reparationSchema.virtual('piecesActives').get(function () {
+  return (this.piecesStock || []).filter((p) => p.statut === 'consomme');
+});
+
+reparationSchema.virtual('totalPiecesConsommees').get(function () {
+  return (this.piecesStock || [])
+    .filter((p) => p.statut === 'consomme')
+    .reduce((sum, p) => sum + (Number(p.quantite) || 0), 0);
 });
 
 // ============================================================
@@ -310,7 +398,6 @@ reparationSchema.pre('validate', async function () {
       const count = await this.constructor.countDocuments();
       const padded = String(count + 1).padStart(4, '0');
       this.numero = `R${year}${padded}`;
-      console.log(`📝 Numéro de réparation généré: ${this.numero}`);
     } catch (error) {
       console.error('❌ Erreur génération numéro:', error);
       const year = new Date().getFullYear();
@@ -320,8 +407,7 @@ reparationSchema.pre('validate', async function () {
 });
 
 // ============================================================
-// ✅ VALIDATION CORRIGÉE : l'acompte ne dépasse pas le PRIX TOTAL
-//    (prix de base + imprévus acceptés)
+// ✅ VALIDATION : l'acompte ne dépasse pas le PRIX TOTAL
 // ============================================================
 reparationSchema.pre('validate', function () {
   const prixTotal = computePrixTotal(this);
@@ -336,7 +422,6 @@ reparationSchema.pre('validate', function () {
 
 // ============================================================
 // ✅ VALIDATION AUTO : synchronisation du paymentType
-//    (au cas où le frontend ne l'envoie pas correctement)
 // ============================================================
 reparationSchema.pre('validate', function () {
   const prixTotal = computePrixTotal(this);
@@ -351,14 +436,41 @@ reparationSchema.pre('validate', function () {
   }
 });
 
-// ==============================================
-// INDEX
-// ==============================================
+// ============================================================
+// ✅ INDEX (complets pour performance)
+// ============================================================
+
+// Index unique sur numéro
 reparationSchema.index({ numero: 1 }, { unique: true });
+
+// ✅ Index composés pour pagination + filtres (les plus utilisés)
+reparationSchema.index({ isDeleted: 1, createdAt: -1 });
+reparationSchema.index({ isDeleted: 1, status: 1 });
+reparationSchema.index({ isDeleted: 1, categorie: 1 });
+reparationSchema.index({ isDeleted: 1, reparateur: 1 });
+reparationSchema.index({ isDeleted: 1, createdBy: 1 });
+reparationSchema.index({ isDeleted: 1, client: 1 });
+reparationSchema.index({ isDeleted: 1, numero: 1 });
+
+// ✅ Index simples (pour compatibilité)
 reparationSchema.index({ client: 1 });
 reparationSchema.index({ status: 1 });
 reparationSchema.index({ createdAt: -1 });
 reparationSchema.index({ reparateur: 1 });
-reparationSchema.index({ marque: 'text' });
+
+// ✅ Index TEXT pour recherche (remplace les regex lentes)
+reparationSchema.index({
+  numero: "text",
+  problemeDeclare: "text",
+  note: "text",
+  panneType: "text",
+});
+
+// ✅ Index pièces stock
+reparationSchema.index({ 'piecesStock.stock': 1 });
+reparationSchema.index({ 'piecesStock.statut': 1 });
+
+// ✅ Index SAV
+reparationSchema.index({ isSAV: 1, savOrigine: 1 });
 
 module.exports = mongoose.model('Reparation', reparationSchema);

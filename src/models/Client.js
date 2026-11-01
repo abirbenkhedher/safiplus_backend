@@ -103,4 +103,5 @@ clientSchema.index({
   codeFidelite: 'text',
 });
 
+
 module.exports = mongoose.model('Client', clientSchema);

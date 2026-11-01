@@ -4,7 +4,6 @@ const statistiquesController = require("../controllers/statistiquesController");
 
 // Middleware d'authentification (adapte le nom selon ton projet : auth, verifyToken, etc.)
 // const { protect, admin } = require("../middleware/auth.middleware");
-
 // router.use(protect); // Décommente pour sécuriser
 
 // Route 1 : Vue d'ensemble
@@ -19,11 +18,16 @@ router.get("/familles", statistiquesController.getFamilles);
 // Route 4 : Catégories
 router.get("/categories", statistiquesController.getCategories);
 
-// Route 5 : Export (CSV)
+// Route 5 : Export (JSON pour l'instant)
 router.get("/export", statistiquesController.exportData);
-// Route 6 : appareils
 
+// Route 6 : Appareils
 router.get("/appareils", statistiquesController.getAppareils);
+
+// Route 7 : Réparateurs
 router.get("/reparateurs", statistiquesController.getReparateurs);
+
+// ✅ NOUVEAU : Route 8 : Statuts
+router.get("/statuts", statistiquesController.getStatuts);
 
 module.exports = router;

@@ -5,33 +5,35 @@ const Marque = require('../models/Marque');
 const Modele = require('../models/Modele');
 const Panne = require('../models/Panne');
 const Categorie = require('../models/Categorie');
+const Stock = require('../models/Stock');
+const MouvementStock = require('../models/MouvementStock');
 const logger = require('../config/logger');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
 
 // ============================================================
-// ✅ HELPER : Échapper les caractères regex
+// ✅ CONSTANTES
+// ============================================================
+const STATUTS_NON_REPARE = [
+  'NON REPARE',
+  'SAV NON REPARE',
+  'SORTIE NON REPARE',
+];
+
+// ============================================================
+// ✅ HELPERS
 // ============================================================
 function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ============================================================
-// ✅ HELPER : Découper une valeur CSV en tableau
-// ============================================================
 function parseMultiValue(val) {
   if (val === undefined || val === null) return [];
   const str = String(val).trim();
   if (!str) return [];
-  return str
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return str.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-// ============================================================
-// ✅ HELPER : Construire la clause Mongo depuis une valeur CSV
-// ============================================================
 function buildInClause(val) {
   const arr = parseMultiValue(val);
   if (arr.length === 0) return null;
@@ -39,9 +41,29 @@ function buildInClause(val) {
   return { $in: arr };
 }
 
-// ============================================================
-// ✅ HELPER : Synchroniser les pannes personnalisées avec la base
-// ============================================================
+// ✅ Compute prix total manuellement (pour lean)
+function computePrixTotal(r) {
+  const imprevusAcceptes = (r.diagnosticImprevus?.imprevus || [])
+    .filter((i) => i.accepte === true)
+    .reduce((sum, i) => sum + (Number(i.prixSupplementaire) || 0), 0);
+  return (Number(r.prix) || 0) + imprevusAcceptes;
+}
+
+// ✅ Enrichir une réparation avec ses virtuals (pour lean)
+function enrichReparation(r) {
+  const prixTotal = computePrixTotal(r);
+  const acompte = Number(r.acompte) || 0;
+  return {
+    ...r,
+    prixTotal,
+    reste: Math.max(0, prixTotal - acompte),
+    resteTotal: Math.max(0, prixTotal - acompte),
+    imprevusEnAttente: (r.diagnosticImprevus?.imprevus || []).filter(
+      (i) => i.accepte === null || i.accepte === undefined
+    ).length,
+  };
+}
+
 async function syncPannesWithCategories(panneNoms, categorieId) {
   try {
     if (!categorieId || !Array.isArray(panneNoms)) return;
@@ -58,7 +80,8 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
       if (!existing) {
         const lastPanne = await Panne.findOne({ categorie: categorieId })
           .sort({ ordre: -1 })
-          .select('ordre');
+          .select('ordre')
+          .lean();
 
         const lastOrdre = lastPanne?.ordre ?? 0;
         const nextOrdre = lastOrdre >= 999 ? lastOrdre + 1 : 999;
@@ -70,9 +93,7 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
           isActive: true,
         });
 
-        logger.info(
-          `✨ Panne personnalisée créée automatiquement: "${trimmed}" (catégorie ${categorieId}, ordre ${nextOrdre})`
-        );
+        logger.info(`✨ Panne créée: "${trimmed}"`);
       }
     }
   } catch (error) {
@@ -80,9 +101,6 @@ async function syncPannesWithCategories(panneNoms, categorieId) {
   }
 }
 
-// ============================================================
-// ✅ HELPER : Envoi SMS + persistance + diagnostic
-// ============================================================
 async function trySendSMS(reparationId, statusIdOrDoc, userId) {
   try {
     const repWithClient = await Reparation.findById(reparationId).populate(
@@ -91,12 +109,7 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
     );
 
     if (!repWithClient) {
-      console.log('🔴 trySendSMS: réparation introuvable', reparationId);
-      return {
-        statutEnvoi: 'echec',
-        erreur: 'Réparation introuvable',
-        skip: true,
-      };
+      return { statutEnvoi: 'echec', erreur: 'Réparation introuvable', skip: true };
     }
 
     let statusDoc = null;
@@ -108,21 +121,8 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
     }
 
     if (!statusDoc) {
-      console.log('🔴 trySendSMS: statut introuvable', statusIdOrDoc);
-      return {
-        statutEnvoi: 'echec',
-        erreur: 'Statut introuvable',
-        skip: true,
-      };
+      return { statutEnvoi: 'echec', erreur: 'Statut introuvable', skip: true };
     }
-
-    console.log('🟡 trySendSMS:', {
-      numero: repWithClient.numero,
-      statusLabel: statusDoc.label,
-      clientPhone: repWithClient.client?.phone,
-      phoneType: typeof repWithClient.client?.phone,
-      hasApiKey: Boolean(process.env.TEXTBEE_API_KEY),
-    });
 
     const smsInfo = await smsService.sendStatusSMS(
       repWithClient,
@@ -131,49 +131,131 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
     );
 
     if (smsInfo && !smsInfo.skip) {
-      repWithClient.smsEnvoyes = [
-        ...(repWithClient.smsEnvoyes || []),
-        smsInfo,
-      ];
+      repWithClient.smsEnvoyes = [...(repWithClient.smsEnvoyes || []), smsInfo];
       await repWithClient.save();
     }
 
     return smsInfo;
   } catch (error) {
     logger.error('Erreur trySendSMS:', error);
-    console.log('🔴 Erreur trySendSMS:', error.message);
-    return {
-      statutEnvoi: 'echec',
-      erreur: error.message,
-      skip: false,
-    };
+    return { statutEnvoi: 'echec', erreur: error.message, skip: false };
+  }
+}
+
+function getFullPopulate(query) {
+  return query
+    .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')
+    .populate('status', 'label color parDefault')
+    .populate({
+      path: 'categorie',
+      select: 'nom famille reparateurs',
+      populate: {
+        path: 'reparateurs',
+        select: 'firstName lastName username role',
+      },
+    })
+    .populate('objet', 'nom')
+    .populate('marque', 'nom')
+    .populate('modele', 'nom')
+    .populate('createdBy', 'username firstName lastName')
+    .populate('representant', 'username firstName lastName')
+    .populate('reparateur', 'username firstName lastName')
+    .populate('reparateurSAV', 'username firstName lastName')
+    .populate('modifications.modifiedBy', 'username firstName lastName')
+    .populate('diagnosticImprevus.imprevus.decisionPar', 'username firstName lastName')
+    .populate('diagnosticImprevus.decisionClient.enregistrePar', 'username firstName lastName')
+    .populate('smsEnvoyes.envoyePar', 'username firstName lastName')
+    .populate({
+      path: 'piecesStock.stock',
+      populate: [
+        { path: 'categorie', select: 'nom' },
+        { path: 'objet', select: 'nom' },
+        { path: 'typeArticle', select: 'nom' },
+        { path: 'marque', select: 'nom' },
+        { path: 'modele', select: 'nom' },
+      ],
+    })
+    .populate('piecesStock.consommePar', 'username firstName lastName')
+    .populate('piecesStock.restaurePar', 'username firstName lastName')
+    .populate('piecesStock.annulePar', 'username firstName lastName');
+}
+
+async function restaurerStockPourReparation(reparation, userId, motif) {
+  try {
+    const pieces = reparation.piecesStock || [];
+    const aRestaurer = pieces.filter((p) => p.statut === 'consomme');
+
+    if (aRestaurer.length === 0) {
+      return { restaurees: 0, details: [] };
+    }
+
+    const details = [];
+
+    for (const piece of aRestaurer) {
+      try {
+        const stock = await Stock.findByIdAndUpdate(
+          piece.stock,
+          { $inc: { quantite: piece.quantite } },
+          { new: true }
+        );
+
+        if (!stock) continue;
+
+        const mouvement = await MouvementStock.create({
+          stock: stock._id,
+          type: 'RESTAURATION_REPARATION',
+          quantite: piece.quantite,
+          quantiteAvant: stock.quantite - piece.quantite,
+          quantiteApres: stock.quantite,
+          reparationId: reparation._id,
+          motif: motif || `Restauration (${reparation.numero})`,
+          createdBy: userId,
+        });
+
+        piece.statut = 'restaure';
+        piece.dateRestauration = new Date();
+        piece.restaurePar = userId;
+        piece.motifRestauration = motif || '';
+        piece.mouvementRestaurationId = mouvement._id;
+
+        details.push({
+          stock: stock._id,
+          quantite: piece.quantite,
+          nouveauStock: stock.quantite,
+        });
+
+        logger.info(`♻️ Stock restauré: +${piece.quantite} × ${stock._id}`);
+      } catch (err) {
+        logger.error(`❌ Erreur restauration pièce ${piece._id}:`, err);
+      }
+    }
+
+    return { restaurees: details.length, details };
+  } catch (error) {
+    logger.error('Erreur restaurerStockPourReparation:', error);
+    return { restaurees: 0, details: [], error: error.message };
   }
 }
 
 // ============================================================
-// GET - Liste des réparations avec filtres (MULTI-VALEURS)
+// GET - Liste paginée OPTIMISÉE
 // ============================================================
 exports.getAll = async (req, res) => {
   try {
+    const startTime = Date.now();
+
     const {
-      search,
-      status,
-      categorie,
-      client,
-      reparateur,
-      createdBy,
-      commercial,
-      famille,
-      dateDebut,
-      dateFin,
-      zone,
-      limit = 50,
-      page = 1,
-      sort = '-createdAt',
+      search, status, categorie, client, reparateur, createdBy, commercial,
+      famille, dateDebut, dateFin, zone,
+      limit = 20, page = 1, sort = '-createdAt',
     } = req.query;
+
+    const limitNum = Math.min(parseInt(limit) || 20, 200); // ✅ sécurité
+    const pageNum = Math.max(parseInt(page) || 1, 1);
 
     const query = { isDeleted: false };
 
+    // ✅ Filtres simples
     const statusClause = buildInClause(status);
     if (statusClause) query.status = statusClause;
 
@@ -183,21 +265,19 @@ exports.getAll = async (req, res) => {
     const reparateurClause = buildInClause(reparateur);
     if (reparateurClause) query.reparateur = reparateurClause;
 
-    const createdByClause =
-      buildInClause(createdBy) || buildInClause(commercial);
+    const createdByClause = buildInClause(createdBy) || buildInClause(commercial);
     if (createdByClause) query.createdBy = createdByClause;
 
+    // ✅ Filtre famille + catégorie
     const familleIds = parseMultiValue(famille);
     const categorieIds = parseMultiValue(categorie);
 
     if (familleIds.length > 0) {
       const categoriesDeLaFamille = await Categorie.find({
         famille: { $in: familleIds },
-      }).select('_id');
+      }).select('_id').lean();
 
-      const categorieIdsDeLaFamille = categoriesDeLaFamille.map((c) =>
-        String(c._id)
-      );
+      const categorieIdsDeLaFamille = categoriesDeLaFamille.map((c) => String(c._id));
 
       if (categorieIds.length > 0) {
         const intersection = categorieIds.filter((id) =>
@@ -205,13 +285,11 @@ exports.getAll = async (req, res) => {
         );
 
         if (intersection.length > 0) {
-          query.categorie =
-            intersection.length === 1 ? intersection[0] : { $in: intersection };
+          query.categorie = intersection.length === 1 ? intersection[0] : { $in: intersection };
         } else {
           return res.json({
-            success: true,
-            data: [],
-            pagination: { total: 0, page: 1, pages: 0 },
+            success: true, data: [],
+            pagination: { total: 0, page: 1, pages: 0, limit: limitNum },
           });
         }
       } else {
@@ -219,27 +297,23 @@ exports.getAll = async (req, res) => {
           query.categorie = { $in: categorieIdsDeLaFamille };
         } else {
           return res.json({
-            success: true,
-            data: [],
-            pagination: { total: 0, page: 1, pages: 0 },
+            success: true, data: [],
+            pagination: { total: 0, page: 1, pages: 0, limit: limitNum },
           });
         }
       }
     } else if (categorieIds.length > 0) {
-      query.categorie =
-        categorieIds.length === 1 ? categorieIds[0] : { $in: categorieIds };
+      query.categorie = categorieIds.length === 1 ? categorieIds[0] : { $in: categorieIds };
     }
 
+    // ✅ Filtre zone
     const zoneValues = parseMultiValue(zone);
     if (zoneValues.length > 0) {
       const zoneRegex = zoneValues.map((z) => ({
         zone: { $regex: `^${escapeRegex(z)}$`, $options: 'i' },
       }));
 
-      const clientsWithZone = await Client.find({
-        $or: zoneRegex,
-      }).select('_id');
-
+      const clientsWithZone = await Client.find({ $or: zoneRegex }).select('_id').lean();
       const clientIdsZone = clientsWithZone.map((c) => c._id);
 
       if (clientIdsZone.length > 0) {
@@ -251,70 +325,64 @@ exports.getAll = async (req, res) => {
           };
           if (query.client.$in.length === 0) {
             return res.json({
-              success: true,
-              data: [],
-              pagination: { total: 0, page: 1, pages: 0 },
+              success: true, data: [],
+              pagination: { total: 0, page: 1, pages: 0, limit: limitNum },
             });
           }
         } else if (query.client) {
-          const belongs = clientIdsZone.some(
-            (cid) => String(cid) === String(query.client)
-          );
+          const belongs = clientIdsZone.some((cid) => String(cid) === String(query.client));
           if (!belongs) {
             return res.json({
-              success: true,
-              data: [],
-              pagination: { total: 0, page: 1, pages: 0 },
+              success: true, data: [],
+              pagination: { total: 0, page: 1, pages: 0, limit: limitNum },
             });
           }
         } else {
-          query.client =
-            clientIdsZone.length === 1
-              ? clientIdsZone[0]
-              : { $in: clientIdsZone };
+          query.client = clientIdsZone.length === 1 ? clientIdsZone[0] : { $in: clientIdsZone };
         }
       } else {
         return res.json({
-          success: true,
-          data: [],
-          pagination: { total: 0, page: 1, pages: 0 },
+          success: true, data: [],
+          pagination: { total: 0, page: 1, pages: 0, limit: limitNum },
         });
       }
     }
 
-    if (search) {
-      const [matchingClients, matchingMarques, matchingModeles] =
-        await Promise.all([
-          Client.find({
-            $or: [
-              { nom: { $regex: search, $options: 'i' } },
-              { phone: { $regex: search, $options: 'i' } },
-              { phone2: { $regex: search, $options: 'i' } },
-              { code: { $regex: search, $options: 'i' } },
-              { codeFidelite: { $regex: search, $options: 'i' } },
-              { adresse: { $regex: search, $options: 'i' } },
-              { zone: { $regex: search, $options: 'i' } },
-            ],
-          }).select('_id'),
-          Marque.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
-          Modele.find({ nom: { $regex: search, $options: 'i' } }).select('_id'),
+    // ✅ RECHERCHE FULL TEXT (optimisée avec $text)
+    if (search && String(search).trim()) {
+      const textSearch = String(search).trim();
+
+      if (textSearch.length >= 2) {
+        // Recherche full text (utilise les index texte)
+        const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
+          Client.find({ $text: { $search: textSearch } }).select('_id').limit(500).lean(),
+          Marque.find({ $text: { $search: textSearch } }).select('_id').limit(200).lean(),
+          Modele.find({ $text: { $search: textSearch } }).select('_id').limit(200).lean(),
         ]);
 
-      const clientIds = matchingClients.map((c) => c._id);
-      const marqueIds = matchingMarques.map((m) => m._id);
-      const modeleIds = matchingModeles.map((m) => m._id);
+        const clientIds = matchingClients.map((c) => c._id);
+        const marqueIds = matchingMarques.map((m) => m._id);
+        const modeleIds = matchingModeles.map((m) => m._id);
 
-      query.$or = [
-        { numero: { $regex: search, $options: 'i' } },
-        { problemeDeclare: { $regex: search, $options: 'i' } },
-        { panneType: { $regex: search, $options: 'i' } },
-        { note: { $regex: search, $options: 'i' } },
-        ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
-        ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
-        ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
-      ];
+        query.$or = [
+          { $text: { $search: textSearch } },
+          ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
+          ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
+          ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
+        ];
+      } else {
+        // Fallback regex pour recherches très courtes
+        const rx = escapeRegex(textSearch);
+        query.$or = [
+          { numero: { $regex: rx, $options: 'i' } },
+          { problemeDeclare: { $regex: rx, $options: 'i' } },
+          { note: { $regex: rx, $options: 'i' } },
+          { panneType: { $regex: rx, $options: 'i' } },
+        ];
+      }
     }
 
+    // ✅ Filtre dates
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
@@ -325,59 +393,32 @@ exports.getAll = async (req, res) => {
       }
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
 
+    // ✅ Requêtes parallèles AVEC .lean() pour perf max
     const [reparations, total] = await Promise.all([
-      Reparation.find(query)
-        .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')
-        .populate('status', 'label color parDefault')
-        .populate({
-          path: 'categorie',
-          select: 'nom famille reparateurs',
-          populate: {
-            path: 'reparateurs',
-            select: 'firstName lastName username role',
-          },
-        })
-        .populate('objet', 'nom')
-        .populate('marque', 'nom')
-        .populate('modele', 'nom')
-        .populate('createdBy', 'username firstName lastName')
-        .populate('representant', 'username firstName lastName')
-        .populate('reparateur', 'username firstName lastName')
-        .populate('reparateurSAV', 'username firstName lastName')
-        .populate(
-          'diagnosticImprevus.imprevus.decisionPar',
-          'username firstName lastName'
-        )
-        .populate(
-          'diagnosticImprevus.decisionClient.enregistrePar',
-          'username firstName lastName'
-        )
-        .populate('smsEnvoyes.envoyePar', 'username firstName lastName')
+      getFullPopulate(Reparation.find(query))
         .sort(sort)
         .skip(skip)
-        .limit(parseInt(limit)),
+        .limit(limitNum)
+        .lean(),
       Reparation.countDocuments(query),
     ]);
 
-    const reparationsWithReste = reparations.map((r) => ({
-      ...r.toObject(),
-      reste: r.prix - r.acompte,
-      prixTotal: r.prixTotal,
-      resteTotal: r.resteTotal,
-      imprevusEnAttente: (r.diagnosticImprevus?.imprevus || []).filter(
-        (i) => i.accepte === null || i.accepte === undefined
-      ).length,
-    }));
+    // ✅ Enrichir manuellement les virtuals (lean ne les calcule pas)
+    const reparationsWithReste = reparations.map(enrichReparation);
+
+    const duration = Date.now() - startTime;
+    logger.info(`📋 getAll: ${total} réparations, ${reparations.length} retournées en ${duration}ms`);
 
     res.json({
       success: true,
       data: reparationsWithReste,
       pagination: {
         total,
-        page: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit)),
+        page: pageNum,
+        pages: Math.ceil(total / limitNum),
+        limit: limitNum,
       },
     });
   } catch (error) {
@@ -394,50 +435,15 @@ exports.getAll = async (req, res) => {
 // ============================================================
 exports.getOne = async (req, res) => {
   try {
-    const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
-      .populate('status', 'label color parDefault')
-      .populate({
-        path: 'categorie',
-        select: 'nom famille reparateurs',
-        populate: {
-          path: 'reparateurs',
-          select: 'firstName lastName username role',
-        },
-      })
-      .populate('objet', 'nom')
-      .populate('marque', 'nom')
-      .populate('modele', 'nom')
-      .populate('createdBy', 'username firstName lastName')
-      .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName')
-      .populate('reparateurSAV', 'username firstName lastName')
-      .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate(
-        'diagnosticImprevus.imprevus.decisionPar',
-        'username firstName lastName'
-      )
-      .populate(
-        'diagnosticImprevus.decisionClient.enregistrePar',
-        'username firstName lastName'
-      )
-      .populate('smsEnvoyes.envoyePar', 'username firstName lastName');
+    const reparation = await getFullPopulate(Reparation.findById(req.params.id));
 
     if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée',
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     res.json({
       success: true,
-      data: {
-        ...reparation.toObject(),
-        reste: reparation.prix - reparation.acompte,
-        prixTotal: reparation.prixTotal,
-        resteTotal: reparation.resteTotal,
-      },
+      data: enrichReparation(reparation.toObject()),
     });
   } catch (error) {
     logger.error('Erreur getOne reparation:', error);
@@ -456,10 +462,7 @@ exports.getPublicByNumero = async (req, res) => {
     const { numero } = req.params;
 
     if (!numero) {
-      return res.status(400).json({
-        success: false,
-        message: 'Numéro de réparation requis',
-      });
+      return res.status(400).json({ success: false, message: 'Numéro de réparation requis' });
     }
 
     const reparation = await Reparation.findOne({ numero, isDeleted: false })
@@ -469,13 +472,11 @@ exports.getPublicByNumero = async (req, res) => {
       .populate('objet', 'nom')
       .populate('marque', 'nom')
       .populate('modele', 'nom')
-      .populate('reparateur', 'firstName lastName');
+      .populate('reparateur', 'firstName lastName')
+      .lean();
 
     if (!reparation) {
-      return res.status(404).json({
-        success: false,
-        message: 'Réparation non trouvée',
-      });
+      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
     }
 
     const imprevusAcceptes = (reparation.diagnosticImprevus?.imprevus || [])
@@ -512,10 +513,7 @@ exports.getPublicByNumero = async (req, res) => {
           color: reparation.status?.color,
         },
         reparateur: reparation.reparateur
-          ? {
-              firstName: reparation.reparateur.firstName,
-              lastName: reparation.reparateur.lastName,
-            }
+          ? { firstName: reparation.reparateur.firstName, lastName: reparation.reparateur.lastName }
           : null,
         dateReception: reparation.dateReception || reparation.createdAt,
         datePrevisionnelle: reparation.datePrevisionnelle,
@@ -537,10 +535,7 @@ exports.getPublicByNumero = async (req, res) => {
     });
   } catch (error) {
     logger.error('Erreur getPublicByNumero:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la récupération',
-    });
+    res.status(500).json({ success: false, message: 'Erreur lors de la récupération' });
   }
 };
 
@@ -551,10 +546,10 @@ exports.create = async (req, res) => {
   try {
     const {
       client, categorie, objet, marque, modele,
-      problemeDeclare, panneType, note, observation, observations,
-      diagnostic, diagnosticImprevus: diagnosticImprevusData,
+      problemeDeclare, panneType, note, observation ,observations,
+            diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
-      representant, reparateur, reparateurSAV,  // ✅ AJOUT
+      representant, reparateur, reparateurSAV,
       datePrevisionnelle, isReparable, isNotified,
     } = req.body;
 
@@ -570,8 +565,7 @@ exports.create = async (req, res) => {
 
     if (!panneType || !Array.isArray(panneType) || panneType.length === 0) {
       return res.status(400).json({
-        success: false,
-        message: 'Au moins une panne est obligatoire',
+        success: false, message: 'Au moins une panne est obligatoire',
       });
     }
 
@@ -581,8 +575,7 @@ exports.create = async (req, res) => {
 
     if (cleanPanneTypes.length === 0) {
       return res.status(400).json({
-        success: false,
-        message: 'Au moins une panne valide est obligatoire',
+        success: false, message: 'Au moins une panne valide est obligatoire',
       });
     }
 
@@ -641,7 +634,7 @@ exports.create = async (req, res) => {
       createdBy: req.user.id,
       representant: representant || req.user.id,
       reparateur: reparateur || null,
-      reparateurSAV: reparateurSAV || null,  // ✅ AJOUT
+      reparateurSAV: reparateurSAV || null,
       datePrevisionnelle: datePrevisionnelle || null,
       isReparable: isReparable !== undefined ? isReparable : true,
       isNotified: isNotified !== undefined ? isNotified : false,
@@ -658,33 +651,7 @@ exports.create = async (req, res) => {
 
     await syncPannesWithCategories(cleanPanneTypes, categorie);
 
-    const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
-      .populate('status', 'label color')
-      .populate({
-        path: 'categorie',
-        select: 'nom famille reparateurs',
-        populate: {
-          path: 'reparateurs',
-          select: 'firstName lastName username role',
-        },
-      })
-      .populate('objet', 'nom')
-      .populate('marque', 'nom')
-      .populate('modele', 'nom')
-      .populate('createdBy', 'username firstName lastName')
-      .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName')
-      .populate('reparateurSAV', 'username firstName lastName')  // ✅ AJOUT
-      .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate(
-        'diagnosticImprevus.imprevus.decisionPar',
-        'username firstName lastName'
-      )
-      .populate(
-        'diagnosticImprevus.decisionClient.enregistrePar',
-        'username firstName lastName'
-      );
+    const populated = await getFullPopulate(Reparation.findById(reparation._id));
 
     logger.info(`Réparation créée: ${reparation.numero} par ${req.user.username}`);
 
@@ -697,12 +664,7 @@ exports.create = async (req, res) => {
       success: true,
       message: 'Réparation créée avec succès',
       sms: smsInfo,
-      data: {
-        ...populated.toObject(),
-        reste: populated.prix - populated.acompte,
-        prixTotal: populated.prixTotal,
-        resteTotal: populated.resteTotal,
-      },
+      data: enrichReparation(populated.toObject()),
     });
   } catch (error) {
     logger.error('Erreur create reparation:', error);
@@ -725,16 +687,16 @@ exports.update = async (req, res) => {
     }
 
     const {
-      client,
-      categorie, objet, marque, modele,
+      client, categorie, objet, marque, modele,
       problemeDeclare, panneType, note, observation, observations,
       diagnostic, diagnosticImprevus: diagnosticImprevusData,
       travauxEffectues, piecesUtilisees, prix, acompte, paymentType, status,
-      representant, reparateur, reparateurSAV,  // ✅ AJOUT
+      representant, reparateur, reparateurSAV,
       datePrevisionnelle, isReparable, isNotified,
       envoyerSMS = false,
     } = req.body;
 
+    // ✅ Validations
     if (client !== undefined && client !== null && client !== '') {
       const currentClientId = reparation.client ? reparation.client.toString() : null;
       if (client !== currentClientId) {
@@ -749,8 +711,7 @@ exports.update = async (req, res) => {
     if (panneType !== undefined) {
       if (!Array.isArray(panneType)) {
         return res.status(400).json({
-          success: false,
-          message: 'Le type de panne doit être un tableau',
+          success: false, message: 'Le type de panne doit être un tableau',
         });
       }
 
@@ -760,13 +721,20 @@ exports.update = async (req, res) => {
 
       if (cleanPanneTypes.length === 0) {
         return res.status(400).json({
-          success: false,
-          message: 'Au moins une panne est obligatoire',
+          success: false, message: 'Au moins une panne est obligatoire',
         });
       }
     }
 
-    if (status && status !== reparation.status.toString()) {
+    // ✅ Détection changement de statut
+    const oldStatusId = reparation.status?.toString();
+    let oldStatusLabel = '';
+    if (oldStatusId) {
+      const oldStatusDoc = await Status.findById(oldStatusId);
+      oldStatusLabel = (oldStatusDoc?.label || '').toUpperCase().trim();
+    }
+
+    if (status && status !== oldStatusId) {
       const statusExists = await Status.findById(status);
       if (!statusExists) {
         return res.status(400).json({ success: false, message: 'Statut non trouvé' });
@@ -793,6 +761,7 @@ exports.update = async (req, res) => {
       }
     }
 
+    // ✅ Snapshot des anciennes valeurs
     const oldValues = {
       client: reparation.client,
       categorie: reparation.categorie,
@@ -812,12 +781,13 @@ exports.update = async (req, res) => {
       acompte: reparation.acompte,
       status: reparation.status,
       reparateur: reparation.reparateur,
-      reparateurSAV: reparation.reparateurSAV,  // ✅ AJOUT
+      reparateurSAV: reparation.reparateurSAV,
       datePrevisionnelle: reparation.datePrevisionnelle,
       isReparable: reparation.isReparable,
       isNotified: reparation.isNotified,
     };
 
+    // ✅ Application des changements
     if (client !== undefined && client !== null && client !== '') {
       reparation.client = client;
     }
@@ -850,11 +820,12 @@ exports.update = async (req, res) => {
     reparation.status = status || reparation.status;
     reparation.representant = representant || reparation.representant;
     reparation.reparateur = reparateur !== undefined ? reparateur : reparation.reparateur;
-    reparation.reparateurSAV = reparateurSAV !== undefined ? reparateurSAV : reparation.reparateurSAV;  // ✅ AJOUT
+    reparation.reparateurSAV = reparateurSAV !== undefined ? reparateurSAV : reparation.reparateurSAV;
     reparation.datePrevisionnelle = datePrevisionnelle !== undefined ? datePrevisionnelle : reparation.datePrevisionnelle;
     reparation.isReparable = isReparable !== undefined ? isReparable : reparation.isReparable;
     reparation.isNotified = isNotified !== undefined ? isNotified : reparation.isNotified;
 
+    // ✅ Diagnostic & imprévus
     if (diagnosticImprevusData !== undefined) {
       const oldDiag = reparation.diagnosticImprevus || {};
       const newImprevus = (diagnosticImprevusData.imprevus || []).filter(
@@ -900,12 +871,14 @@ exports.update = async (req, res) => {
       };
     }
 
+    // ✅ paymentType
     const finalPrix = reparation.prix || 0;
     const finalAcompte = reparation.acompte || 0;
     if (finalAcompte >= finalPrix && finalPrix > 0) reparation.paymentType = 'paid';
     else if (finalAcompte > 0 && finalAcompte < finalPrix) reparation.paymentType = 'partial';
     else reparation.paymentType = 'unpaid';
 
+    // ✅ dateLivraison automatique
     if (status) {
       const newStatusDoc = await Status.findById(status);
       if (newStatusDoc && newStatusDoc.label === 'Livré') {
@@ -913,9 +886,10 @@ exports.update = async (req, res) => {
       }
     }
 
+    // ✅ Tracking des modifications
     const trackedFields = [
       'client',
-      'prix', 'acompte', 'status', 'reparateur', 'reparateurSAV',  // ✅ AJOUT
+      'prix', 'acompte', 'status', 'reparateur', 'reparateurSAV',
       'problemeDeclare',
       'panneType', 'marque', 'modele', 'note', 'observations',
       'datePrevisionnelle',
@@ -992,7 +966,43 @@ exports.update = async (req, res) => {
         ...(reparation.modifications || []),
         ...newModifications,
       ];
-      logger.info(`📝 ${newModifications.length} modification(s) enregistrée(s) pour ${reparation.numero}`);
+      logger.info(`📝 ${newModifications.length} modification(s) pour ${reparation.numero}`);
+    }
+
+    // ✅ Restauration automatique du stock (si statut → NON REPARE)
+    let stockRestauration = null;
+
+    if (status && status !== oldStatusId) {
+      const newStatusDoc = await Status.findById(status);
+      const newStatusLabel = (newStatusDoc?.label || '').toUpperCase().trim();
+
+      const wasNonRepare = STATUTS_NON_REPARE.includes(oldStatusLabel);
+      const isNonRepare = STATUTS_NON_REPARE.includes(newStatusLabel);
+
+      if (!wasNonRepare && isNonRepare) {
+        logger.info(
+          `♻️ Restauration stock pour ${reparation.numero} (${oldStatusLabel} → ${newStatusLabel})`
+        );
+
+        stockRestauration = await restaurerStockPourReparation(
+          reparation,
+          req.user.id,
+          `Réparation ${newStatusLabel}`
+        );
+
+        if (stockRestauration.restaurees > 0) {
+          reparation.modifications = [
+            ...(reparation.modifications || []),
+            {
+              field: 'piecesStock',
+              oldValue: null,
+              newValue: `${stockRestauration.restaurees} pièce(s) restaurée(s) au stock`,
+              modifiedBy: req.user.id,
+              modifiedAt: new Date(),
+            },
+          ];
+        }
+      }
     }
 
     await reparation.save();
@@ -1006,34 +1016,7 @@ exports.update = async (req, res) => {
       );
     }
 
-    const populated = await Reparation.findById(reparation._id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
-      .populate('status', 'label color')
-      .populate({
-        path: 'categorie',
-        select: 'nom famille reparateurs',
-        populate: {
-          path: 'reparateurs',
-          select: 'firstName lastName username role',
-        },
-      })
-      .populate('objet', 'nom')
-      .populate('marque', 'nom')
-      .populate('modele', 'nom')
-      .populate('createdBy', 'username firstName lastName')
-      .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName')
-      .populate('reparateurSAV', 'username firstName lastName')  // ✅ AJOUT
-      .populate('modifications.modifiedBy', 'username firstName lastName')
-      .populate(
-        'diagnosticImprevus.imprevus.decisionPar',
-        'username firstName lastName'
-      )
-      .populate(
-        'diagnosticImprevus.decisionClient.enregistrePar',
-        'username firstName lastName'
-      )
-      .populate('smsEnvoyes.envoyePar', 'username firstName lastName');
+    const populated = await getFullPopulate(Reparation.findById(reparation._id));
 
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
 
@@ -1041,12 +1024,8 @@ exports.update = async (req, res) => {
       success: true,
       message: 'Réparation modifiée avec succès',
       sms: smsInfo,
-      data: {
-        ...populated.toObject(),
-        reste: populated.prix - populated.acompte,
-        prixTotal: populated.prixTotal,
-        resteTotal: populated.resteTotal,
-      },
+      stockRestauration,
+      data: enrichReparation(populated.toObject()),
     });
   } catch (error) {
     logger.error('Erreur update reparation:', error);
@@ -1077,6 +1056,9 @@ exports.changeStatus = async (req, res) => {
     }
 
     const oldStatus = reparation.status;
+    const oldStatusDoc = oldStatus ? await Status.findById(oldStatus) : null;
+    const oldStatusLabel = (oldStatusDoc?.label || '').toUpperCase().trim();
+    const newStatusLabel = (statusExists.label || '').toUpperCase().trim();
 
     if (statusExists.isTerminal) {
       if (req.user.role !== 'ADMIN') {
@@ -1101,6 +1083,37 @@ exports.changeStatus = async (req, res) => {
       },
     ];
 
+    // ✅ Restauration automatique du stock
+    let stockRestauration = null;
+
+    const wasNonRepare = STATUTS_NON_REPARE.includes(oldStatusLabel);
+    const isNonRepare = STATUTS_NON_REPARE.includes(newStatusLabel);
+
+    if (!wasNonRepare && isNonRepare) {
+      logger.info(
+        `♻️ Restauration stock pour ${reparation.numero} (${oldStatusLabel} → ${newStatusLabel})`
+      );
+
+      stockRestauration = await restaurerStockPourReparation(
+        reparation,
+        req.user.id,
+        `Réparation ${newStatusLabel}`
+      );
+
+      if (stockRestauration.restaurees > 0) {
+        reparation.modifications = [
+          ...(reparation.modifications || []),
+          {
+            field: 'piecesStock',
+            oldValue: null,
+            newValue: `${stockRestauration.restaurees} pièce(s) restaurée(s) au stock`,
+            modifiedBy: req.user.id,
+            modifiedAt: new Date(),
+          },
+        ];
+      }
+    }
+
     await reparation.save();
 
     let smsInfo = null;
@@ -1109,17 +1122,18 @@ exports.changeStatus = async (req, res) => {
     }
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('status', 'label color');
+      .populate('status', 'label color')
+      .populate('piecesStock.stock')
+      .lean();
 
-    logger.info(
-      `Statut changé: ${reparation.numero} -> ${statusExists.label} par ${req.user.username}`
-    );
+    logger.info(`Statut changé: ${reparation.numero} → ${statusExists.label} par ${req.user.username}`);
 
     res.json({
       success: true,
       message: 'Statut changé avec succès',
       sms: smsInfo,
-      data: populated,
+      stockRestauration,
+      data: enrichReparation(populated),
     });
   } catch (error) {
     logger.error('Erreur changeStatus:', error);
@@ -1159,7 +1173,8 @@ exports.assignReparateur = async (req, res) => {
     await reparation.save();
 
     const populated = await Reparation.findById(reparation._id)
-      .populate('reparateur', 'username firstName lastName');
+      .populate('reparateur', 'username firstName lastName')
+      .lean();
 
     logger.info(`Réparateur assigné: ${reparation.numero} par ${req.user.username}`);
 
@@ -1223,24 +1238,7 @@ exports.delete = async (req, res) => {
 // ============================================================
 exports.generatePDF = async (req, res) => {
   try {
-    const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
-      .populate('status', 'label color')
-      .populate({
-        path: 'categorie',
-        select: 'nom famille reparateurs',
-        populate: {
-          path: 'reparateurs',
-          select: 'firstName lastName username role',
-        },
-      })
-      .populate('objet', 'nom')
-      .populate('marque', 'nom')
-      .populate('modele', 'nom')
-      .populate('createdBy', 'username firstName lastName')
-      .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName')
-      .populate('reparateurSAV', 'username firstName lastName');  // ✅ AJOUT
+    const reparation = await getFullPopulate(Reparation.findById(req.params.id));
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -1272,24 +1270,7 @@ exports.generatePDF = async (req, res) => {
 // ============================================================
 exports.getTicketHTML = async (req, res) => {
   try {
-    const reparation = await Reparation.findById(req.params.id)
-      .populate('client', 'nom phone phone2 email code codeFidelite adresse')
-      .populate('status', 'label color')
-      .populate({
-        path: 'categorie',
-        select: 'nom famille reparateurs',
-        populate: {
-          path: 'reparateurs',
-          select: 'firstName lastName username role',
-        },
-      })
-      .populate('objet', 'nom')
-      .populate('marque', 'nom')
-      .populate('modele', 'nom')
-      .populate('createdBy', 'username firstName lastName')
-      .populate('representant', 'username firstName lastName')
-      .populate('reparateur', 'username firstName lastName')
-      .populate('reparateurSAV', 'username firstName lastName');  // ✅ AJOUT
+    const reparation = await getFullPopulate(Reparation.findById(req.params.id));
 
     if (!reparation || reparation.isDeleted) {
       return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
@@ -1336,9 +1317,7 @@ exports.deleteMany = async (req, res) => {
       }
     );
 
-    logger.info(
-      `${result.modifiedCount} réparation(s) supprimée(s) par ${req.user.username}`
-    );
+    logger.info(`${result.modifiedCount} réparation(s) supprimée(s) par ${req.user.username}`);
 
     res.json({
       success: true,

@@ -1086,6 +1086,121 @@ const exportReparateurs = async (reparateurs, filters = {}, topRetours = []) => 
   return workbook;
 };
 
+// ============================================
+// ✅ NOUVEAU : EXPORT STATUTS (Statistiques)
+// ============================================
+const exportStatuts = async (statuts, filters = {}) => {
+  const workbook = createWorkbook();
+  const worksheet = workbook.addWorksheet('Statuts');
+
+  const headers = [
+    'Statut', 'Nb réparations', 'Pourcentage (%)',
+    'CA (DT)', 'Encaissé (DT)', 'Reste (DT)',
+  ];
+
+  const widths = [30, 16, 16, 16, 16, 16];
+
+  const total = statuts.reduce((s, r) => s + (r.nb_reparations || 0), 0);
+  const totalCA = statuts.reduce((s, r) => s + (r.ca || 0), 0);
+  const totalEncaisse = statuts.reduce((s, r) => s + (r.encaisse || 0), 0);
+  const totalReste = totalCA - totalEncaisse;
+
+  addTitle(
+    worksheet,
+    '📊 STATISTIQUES PAR STATUT',
+    `Exporté le ${new Date().toLocaleString('fr-FR')} | Total: ${total} réparation(s)`,
+    headers.length
+  );
+
+  addHeader(worksheet, headers);
+  setColumnWidths(worksheet, widths);
+
+  statuts.forEach((row, index) => {
+    const percentage = total > 0
+      ? Math.round((row.nb_reparations / total) * 1000) / 10
+      : 0;
+
+    const dataRow = worksheet.addRow([
+      row.label || '—',
+      row.nb_reparations || 0,
+      percentage,
+      row.ca || 0,
+      row.encaisse || 0,
+      row.reste || 0,
+    ]);
+
+    styleDataRow(dataRow, index % 2 === 1);
+
+    // ✅ Couleur du statut (colonne 1)
+    const statusCell = dataRow.getCell(1);
+    if (row.color) {
+      const hex = String(row.color).replace('#', '').toUpperCase();
+      statusCell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: `FF${hex.padStart(6, '0')}` },
+      };
+      statusCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      statusCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    }
+
+    // Centrer Nb et %
+    [2, 3].forEach((col) => {
+      dataRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    dataRow.getCell(3).numFmt = '0.0"%"';
+
+    // Formater les montants
+    [4, 5, 6].forEach((col) => {
+      const cell = dataRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  });
+
+  // Ligne des totaux
+  if (statuts.length > 0) {
+    const totalRowData = ['TOTAUX', total, 100, totalCA, totalEncaisse, totalReste];
+    const totalRow = worksheet.addRow(totalRowData);
+
+    totalRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 11 };
+      cell.fill = {
+        type: 'pattern', pattern: 'solid',
+        fgColor: { argb: 'FFE7F1FF' },
+      };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        bottom: { style: 'medium', color: { argb: 'FF0D6EFD' } },
+        left: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+        right: { style: 'thin', color: { argb: 'FFDDDDDD' } },
+      };
+    });
+
+    [2, 3].forEach((col) => {
+      totalRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    totalRow.getCell(3).numFmt = '0.0"%"';
+    [4, 5, 6].forEach((col) => {
+      const cell = totalRow.getCell(col);
+      cell.numFmt = '#,##0.00" DT"';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    });
+  }
+
+  // Filtres appliqués
+  const activeFilters = formatFilters(filters);
+  if (activeFilters) {
+    worksheet.addRow([]);
+    const filterRow = worksheet.addRow([`Filtres appliqués: ${activeFilters}`]);
+    worksheet.mergeCells(filterRow.number, 1, filterRow.number, headers.length);
+    filterRow.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6C757D' } };
+  }
+
+  worksheet.views = [{ state: 'frozen', ySplit: 4 }];
+  return workbook;
+};
+
 module.exports = {
   exportReparations,
   exportClients,
@@ -1094,6 +1209,7 @@ module.exports = {
   exportAppareils,
   exportCategories,
   exportFamilles,
-  exportReparateurs, // ✅ NOUVEAU
+  exportReparateurs,
+  exportStatuts, // ✅ NOUVEAU
   sendWorkbook,
 };

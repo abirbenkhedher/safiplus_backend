@@ -23,7 +23,9 @@ const modelesRoutes =  require('./src/routes/modelesRoutes');
 const pannesRoutes =  require('./src/routes/pannesRoutes');
 const statistiquesRoutes = require('./src/routes/statistiquesRoutes');
 const zonesRoutes = require('./src/routes/zonesRoutes');
-
+const depensesRoutes = require('./src/routes/depensesRoutes');
+const stockRoutes = require('./src/routes/stockRoutes');
+const typeArticleRoutes = require('./src/routes/typeArticlesRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -66,7 +68,9 @@ app.use('/api/modeles', modelesRoutes);
 app.use('/api/pannes', pannesRoutes);
 app.use("/api/statistiques", statistiquesRoutes);
 app.use('/api/zones', zonesRoutes);
-
+app.use('/api/depenses', depensesRoutes);
+app.use('/api/stock', stockRoutes);
+app.use('/api/typearticles',typeArticleRoutes);
 
 // Error handler
 app.use(errorHandler);
