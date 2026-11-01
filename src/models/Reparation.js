@@ -440,7 +440,7 @@ reparationSchema.pre('validate', function () {
 // ✅ INDEX (complets pour performance)
 // ============================================================
 
-// Index unique sur numéro
+// ✅ Index unique sur numéro
 reparationSchema.index({ numero: 1 }, { unique: true });
 
 // ✅ Index composés pour pagination + filtres (les plus utilisés)
@@ -458,13 +458,12 @@ reparationSchema.index({ status: 1 });
 reparationSchema.index({ createdAt: -1 });
 reparationSchema.index({ reparateur: 1 });
 
-// ✅ Index TEXT pour recherche (remplace les regex lentes)
-reparationSchema.index({
-  numero: "text",
-  problemeDeclare: "text",
-  note: "text",
-  panneType: "text",
-});
+// ✅ Index de recherche (regex-friendly, sans conflit TEXT)
+// Ces index accélèrent les requêtes { $regex: ... } sur ces champs
+reparationSchema.index({ numero: 1, isDeleted: 1 });
+reparationSchema.index({ problemeDeclare: 1, isDeleted: 1 });
+reparationSchema.index({ note: 1, isDeleted: 1 });
+reparationSchema.index({ panneType: 1, isDeleted: 1 });
 
 // ✅ Index pièces stock
 reparationSchema.index({ 'piecesStock.stock': 1 });

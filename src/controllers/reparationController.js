@@ -348,39 +348,50 @@ exports.getAll = async (req, res) => {
       }
     }
 
-    // ✅ RECHERCHE FULL TEXT (optimisée avec $text)
-    if (search && String(search).trim()) {
-      const textSearch = String(search).trim();
+   // ✅ RECHERCHE PAR REGEX (fonctionne TOUJOURS, sans index TEXT)
+if (search && String(search).trim()) {
+  const textSearch = String(search).trim();
+  const rx = escapeRegex(textSearch);
 
-      if (textSearch.length >= 2) {
-        // Recherche full text (utilise les index texte)
-        const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
-          Client.find({ $text: { $search: textSearch } }).select('_id').limit(500).lean(),
-          Marque.find({ $text: { $search: textSearch } }).select('_id').limit(200).lean(),
-          Modele.find({ $text: { $search: textSearch } }).select('_id').limit(200).lean(),
-        ]);
+  const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
+    Client.find({
+      $or: [
+        { nom: { $regex: rx, $options: 'i' } },
+        { phone: { $regex: rx, $options: 'i' } },
+        { phone2: { $regex: rx, $options: 'i' } },
+        { code: { $regex: rx, $options: 'i' } },
+        { codeFidelite: { $regex: rx, $options: 'i' } },
+      ],
+    }).select('_id').limit(1000).lean(),
+    Marque.find({ nom: { $regex: rx, $options: 'i' } }).select('_id').limit(200).lean(),
+    Modele.find({ nom: { $regex: rx, $options: 'i' } }).select('_id').limit(200).lean(),
+  ]);
 
-        const clientIds = matchingClients.map((c) => c._id);
-        const marqueIds = matchingMarques.map((m) => m._id);
-        const modeleIds = matchingModeles.map((m) => m._id);
+  const clientIds = matchingClients.map((c) => c._id);
+  const marqueIds = matchingMarques.map((m) => m._id);
+  const modeleIds = matchingModeles.map((m) => m._id);
 
-        query.$or = [
-          { $text: { $search: textSearch } },
-          ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
-          ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
-          ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
-        ];
-      } else {
-        // Fallback regex pour recherches très courtes
-        const rx = escapeRegex(textSearch);
-        query.$or = [
-          { numero: { $regex: rx, $options: 'i' } },
-          { problemeDeclare: { $regex: rx, $options: 'i' } },
-          { note: { $regex: rx, $options: 'i' } },
-          { panneType: { $regex: rx, $options: 'i' } },
-        ];
-      }
-    }
+  const searchConditions = [
+    { numero: { $regex: rx, $options: 'i' } },
+    { problemeDeclare: { $regex: rx, $options: 'i' } },
+    { note: { $regex: rx, $options: 'i' } },
+    { panneType: { $regex: rx, $options: 'i' } },
+    ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
+    ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
+    ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
+  ];
+
+  if (query.$or) {
+    query.$and = [
+      ...(query.$and || []),
+      { $or: query.$or },
+      { $or: searchConditions },
+    ];
+    delete query.$or;
+  } else {
+    query.$or = searchConditions;
+  }
+}
 
     // ✅ Filtre dates
     if (dateDebut || dateFin) {
