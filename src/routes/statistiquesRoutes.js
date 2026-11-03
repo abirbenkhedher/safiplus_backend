@@ -30,4 +30,7 @@ router.get("/reparateurs", statistiquesController.getReparateurs);
 // ✅ NOUVEAU : Route 8 : Statuts
 router.get("/statuts", statistiquesController.getStatuts);
 
+// ✅ NOUVEAU : Bénéfice
+router.get("/benefice", statistiquesController.getBenefice);
+
 module.exports = router;

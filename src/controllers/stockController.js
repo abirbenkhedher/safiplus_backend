@@ -178,12 +178,10 @@ exports.getStats = async (req, res) => {
 
     let enAlerte = 0;
     let rupture = 0;
-    let valeur = 0;
 
     all.forEach((s) => {
       if (s.quantite === 0) rupture++;
       else if (s.quantite <= s.seuilAlerte) enAlerte++;
-      valeur += s.quantite * (s.prixIndicatif || 0);
     });
 
     res.json({
@@ -192,7 +190,6 @@ exports.getStats = async (req, res) => {
         total: all.length,
         enAlerte,
         rupture,
-        valeur: Math.round(valeur * 100) / 100,
       },
     });
   } catch (error) {

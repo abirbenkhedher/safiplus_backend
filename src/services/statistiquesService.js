@@ -1,5 +1,6 @@
 const Reparation = require("../models/Reparation");
 const Status = require("../models/Status");
+const Depense = require("../models/Depense");
 
 // ============================================================
 // ✅ HELPER : Calcul du prix total (prix + imprévus acceptés)
@@ -986,5 +987,290 @@ exports.getStatuts = async (from, to) => {
     table,
     grouped,
     sav_breakdown,
+  };
+};
+
+// ============================================================
+// 7. BÉNÉFICE (Rentabilité : CA - Dépenses)
+// ============================================================
+
+exports.getBenefice = async (from, to) => {
+  const match = buildMatch(from, to);
+  const prixTotalExpr = getPrixTotalExpr();
+
+  const start = new Date(from);
+  const end = new Date(to + "T23:59:59.999Z");
+  const matchDepense = {
+    isDeleted: false,
+    dateDepense: { $gte: start, $lte: end },
+  };
+
+  // ----------------------------------------------------------
+  // 1. CA et nb réparations
+  // ----------------------------------------------------------
+  const caAgg = await Reparation.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: null,
+        ca_total: { $sum: prixTotalExpr },
+        encaissements: { $sum: { $ifNull: ["$acompte", 0] } },
+        nb_reparations: { $sum: 1 },
+      },
+    },
+  ]);
+  const caData = caAgg[0] || { ca_total: 0, encaissements: 0, nb_reparations: 0 };
+
+  // ----------------------------------------------------------
+  // 2. Dépenses (réparation + diverse)
+  // ----------------------------------------------------------
+  const depAgg = await Depense.aggregate([
+    { $match: matchDepense },
+    {
+      $group: {
+        _id: "$type",
+        total: { $sum: "$montant" },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const depReparation = depAgg.find((d) => d._id === "REPARATION")?.total || 0;
+  const depDiverse = depAgg.find((d) => d._id === "DIVERSE")?.total || 0;
+  const nbDepReparation = depAgg.find((d) => d._id === "REPARATION")?.count || 0;
+  const nbDepDiverse = depAgg.find((d) => d._id === "DIVERSE")?.count || 0;
+
+  const depenses_total = depReparation + depDiverse;
+
+  // ----------------------------------------------------------
+  // 3. Calculs de bénéfice
+  // ----------------------------------------------------------
+  const marge_brute = caData.ca_total - depReparation;
+  const benefice_net = caData.ca_total - depenses_total;
+
+  const taux_marge_brute =
+    caData.ca_total > 0 ? (marge_brute / caData.ca_total) * 100 : 0;
+  const taux_marge_nette =
+    caData.ca_total > 0 ? (benefice_net / caData.ca_total) * 100 : 0;
+
+  const panier_moyen =
+    caData.nb_reparations > 0 ? caData.ca_total / caData.nb_reparations : 0;
+  const cout_moyen_reparation =
+    caData.nb_reparations > 0 ? depReparation / caData.nb_reparations : 0;
+
+  // ----------------------------------------------------------
+  // 4. Période précédente pour variations
+  // ----------------------------------------------------------
+  const prevDates = getPreviousPeriod(from, to);
+  const prevMatch = buildMatch(prevDates.from, prevDates.to);
+  const prevStart = new Date(prevDates.from);
+  const prevEnd = new Date(prevDates.to + "T23:59:59.999Z");
+
+  const prevCaAgg = await Reparation.aggregate([
+    { $match: prevMatch },
+    { $group: { _id: null, ca_total: { $sum: prixTotalExpr } } },
+  ]);
+  const prevCa = prevCaAgg[0]?.ca_total || 0;
+
+  const prevDepAgg = await Depense.aggregate([
+    {
+      $match: {
+        isDeleted: false,
+        dateDepense: { $gte: prevStart, $lte: prevEnd },
+      },
+    },
+    { $group: { _id: null, total: { $sum: "$montant" } } },
+  ]);
+  const prevDep = prevDepAgg[0]?.total || 0;
+  const prevBenefice = prevCa - prevDep;
+
+  const variations = {
+    ca_total: calcVariation(caData.ca_total, prevCa),
+    depenses_total: calcVariation(depenses_total, prevDep),
+    benefice_net: calcVariation(benefice_net, prevBenefice),
+  };
+
+  // ----------------------------------------------------------
+  // 5. Évolution journalière (CA / Dépenses / Bénéfice)
+  // ----------------------------------------------------------
+  const evoCA = await Reparation.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: {
+          $dateToString: {
+            format: "%Y-%m-%d",
+            date: { $ifNull: ["$dateReception", "$createdAt"] },
+          },
+        },
+        ca: { $sum: prixTotalExpr },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  const evoDep = await Depense.aggregate([
+    { $match: matchDepense },
+    {
+      $group: {
+        _id: {
+          $dateToString: { format: "%Y-%m-%d", date: "$dateDepense" },
+        },
+        dep: { $sum: "$montant" },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  // Fusion par date
+  const evoMap = {};
+  evoCA.forEach((r) => {
+    evoMap[r._id] = { date: r._id, ca: r.ca, dep: 0 };
+  });
+  evoDep.forEach((r) => {
+    if (!evoMap[r._id]) evoMap[r._id] = { date: r._id, ca: 0, dep: 0 };
+    evoMap[r._id].dep = r.dep;
+  });
+
+  const evolution = Object.values(evoMap)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((d) => ({
+      date: d.date,
+      ca: Math.round(d.ca * 100) / 100,
+      depenses: Math.round(d.dep * 100) / 100,
+      benefice: Math.round((d.ca - d.dep) * 100) / 100,
+    }));
+
+  // ----------------------------------------------------------
+  // 6. Marge par famille (CA - dépenses liées)
+  // ----------------------------------------------------------
+  const margeFamille = await Reparation.aggregate([
+    { $match: match },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "categorie",
+        foreignField: "_id",
+        as: "cat",
+      },
+    },
+    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "familles",
+        localField: "cat.famille",
+        foreignField: "_id",
+        as: "fam",
+      },
+    },
+    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: { $ifNull: ["$fam.nom", "Non classé"] },
+        ca: { $sum: prixTotalExpr },
+        nb: { $sum: 1 },
+      },
+    },
+    { $sort: { ca: -1 } },
+    {
+      $project: {
+        _id: 0,
+        famille: "$_id",
+        ca: 1,
+        nb_reparations: "$nb",
+      },
+    },
+  ]);
+
+  // ----------------------------------------------------------
+  // 7. Top 5 réparations les plus rentables
+  // ----------------------------------------------------------
+  const topRentables = await Reparation.aggregate([
+    { $match: match },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "categorie",
+        foreignField: "_id",
+        as: "cat",
+      },
+    },
+    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "marques",
+        localField: "marque",
+        foreignField: "_id",
+        as: "marque",
+      },
+    },
+    { $unwind: { path: "$marque", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        _id: 0,
+        numero: 1,
+        prix: { $ifNull: ["$prix", 0] },
+        categorie: { $ifNull: ["$cat.nom", "—"] },
+        marque: { $ifNull: ["$marque.nom", "—"] },
+        date: { $ifNull: ["$dateReception", "$createdAt"] },
+      },
+    },
+    { $sort: { prix: -1 } },
+    { $limit: 5 },
+  ]);
+
+  // ----------------------------------------------------------
+  // 8. ✅ NOUVEAU : Top 5 dépenses (les plus grosses)
+  // ----------------------------------------------------------
+  const topDepenses = await Depense.aggregate([
+    { $match: matchDepense },
+    {
+      $project: {
+        _id: 0,
+        numero: 1,
+        montant: 1,
+        type: 1,
+        dateDepense: 1,
+        fournisseur: { $ifNull: ["$fournisseur", "—"] },
+        categorieDiverse: { $ifNull: ["$categorieDiverse", "—"] },
+        motifDiverse: { $ifNull: ["$motifDiverse", ""] },
+        factureNumero: { $ifNull: ["$factureNumero", ""] },
+      },
+    },
+    { $sort: { montant: -1 } },
+    { $limit: 5 },
+  ]);
+
+  // ----------------------------------------------------------
+  // ✅ RETOUR
+  // ----------------------------------------------------------
+  return {
+    // ---- KPI principaux ----
+    ca_total: Math.round(caData.ca_total * 100) / 100,
+    depenses_total: Math.round(depenses_total * 100) / 100,
+    depenses_reparation: Math.round(depReparation * 100) / 100,
+    depenses_diverse: Math.round(depDiverse * 100) / 100,
+    nb_dep_reparation: nbDepReparation,
+    nb_dep_diverse: nbDepDiverse,
+
+    marge_brute: Math.round(marge_brute * 100) / 100,
+    benefice_net: Math.round(benefice_net * 100) / 100,
+
+    taux_marge_brute: Math.round(taux_marge_brute * 10) / 10,
+    taux_marge_nette: Math.round(taux_marge_nette * 10) / 10,
+
+    panier_moyen: Math.round(panier_moyen * 100) / 100,
+    cout_moyen_reparation: Math.round(cout_moyen_reparation * 100) / 100,
+    nb_reparations: caData.nb_reparations,
+    encaissements: Math.round(caData.encaissements * 100) / 100,
+
+    // ---- Variations ----
+    variations,
+
+    // ---- Graphiques ----
+    evolution,
+    marge_par_famille: margeFamille,
+    top_rentables: topRentables,
+    top_depenses: topDepenses, // ✅ NOUVEAU
   };
 };

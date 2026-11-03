@@ -140,3 +140,17 @@ exports.exportData = async (req, res) => {
     res.status(500).json({ message: "Erreur lors de l'export des données" });
   }
 };
+
+// ============================================================
+// ✅ NOUVEAU : GET /api/statistiques/benefice
+// ============================================================
+exports.getBenefice = async (req, res) => {
+  try {
+    const { from, to } = getPeriod(req);
+    const data = await statistiquesService.getBenefice(from, to);
+    res.json(data);
+  } catch (error) {
+    console.error("Erreur getBenefice:", error);
+    res.status(500).json({ message: "Erreur lors du chargement du bénéfice" });
+  }
+};
