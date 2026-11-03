@@ -20,6 +20,11 @@ const STATUTS_NON_REPARE = [
   'SORTIE NON REPARE',
 ];
 
+const OBJECTID_FIELDS_TO_CLEAN = [
+  'marque', 'modele', 'reparateur', 'reparateurSAV',
+  'representant', 'categorie', 'objet', 'client', 'status',
+];
+
 // ============================================================
 // ✅ HELPERS
 // ============================================================
@@ -41,7 +46,22 @@ function buildInClause(val) {
   return { $in: arr };
 }
 
-// ✅ Compute prix total manuellement (pour lean)
+async function cleanEmptyObjectIds() {
+  try {
+    for (const field of OBJECTID_FIELDS_TO_CLEAN) {
+      const result = await Reparation.collection.updateMany(
+        { [field]: '' },
+        { $set: { [field]: null } }
+      );
+      if (result.modifiedCount > 0) {
+        logger.info(`🔧 Nettoyage ${field}: ${result.modifiedCount} doc(s)`);
+      }
+    }
+  } catch (err) {
+    logger.error('Erreur cleanEmptyObjectIds:', err);
+  }
+}
+
 function computePrixTotal(r) {
   const imprevusAcceptes = (r.diagnosticImprevus?.imprevus || [])
     .filter((i) => i.accepte === true)
@@ -49,8 +69,8 @@ function computePrixTotal(r) {
   return (Number(r.prix) || 0) + imprevusAcceptes;
 }
 
-// ✅ Enrichir une réparation avec ses virtuals (pour lean)
 function enrichReparation(r) {
+  if (!r) return null;
   const prixTotal = computePrixTotal(r);
   const acompte = Number(r.acompte) || 0;
   return {
@@ -244,18 +264,20 @@ exports.getAll = async (req, res) => {
   try {
     const startTime = Date.now();
 
+    await cleanEmptyObjectIds();
+
     const {
       search, status, categorie, client, reparateur, createdBy, commercial,
       famille, dateDebut, dateFin, zone,
+      dateModifDebut, dateModifFin,
       limit = 20, page = 1, sort = '-createdAt',
     } = req.query;
 
-    const limitNum = Math.min(parseInt(limit) || 20, 200); // ✅ sécurité
+    const limitNum = Math.min(parseInt(limit) || 20, 200);
     const pageNum = Math.max(parseInt(page) || 1, 1);
 
     const query = { isDeleted: false };
 
-    // ✅ Filtres simples
     const statusClause = buildInClause(status);
     if (statusClause) query.status = statusClause;
 
@@ -268,7 +290,6 @@ exports.getAll = async (req, res) => {
     const createdByClause = buildInClause(createdBy) || buildInClause(commercial);
     if (createdByClause) query.createdBy = createdByClause;
 
-    // ✅ Filtre famille + catégorie
     const familleIds = parseMultiValue(famille);
     const categorieIds = parseMultiValue(categorie);
 
@@ -306,7 +327,6 @@ exports.getAll = async (req, res) => {
       query.categorie = categorieIds.length === 1 ? categorieIds[0] : { $in: categorieIds };
     }
 
-    // ✅ Filtre zone
     const zoneValues = parseMultiValue(zone);
     if (zoneValues.length > 0) {
       const zoneRegex = zoneValues.map((z) => ({
@@ -348,52 +368,50 @@ exports.getAll = async (req, res) => {
       }
     }
 
-   // ✅ RECHERCHE PAR REGEX (fonctionne TOUJOURS, sans index TEXT)
-if (search && String(search).trim()) {
-  const textSearch = String(search).trim();
-  const rx = escapeRegex(textSearch);
+    if (search && String(search).trim()) {
+      const textSearch = String(search).trim();
+      const rx = escapeRegex(textSearch);
 
-  const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
-    Client.find({
-      $or: [
-        { nom: { $regex: rx, $options: 'i' } },
-        { phone: { $regex: rx, $options: 'i' } },
-        { phone2: { $regex: rx, $options: 'i' } },
-        { code: { $regex: rx, $options: 'i' } },
-        { codeFidelite: { $regex: rx, $options: 'i' } },
-      ],
-    }).select('_id').limit(1000).lean(),
-    Marque.find({ nom: { $regex: rx, $options: 'i' } }).select('_id').limit(200).lean(),
-    Modele.find({ nom: { $regex: rx, $options: 'i' } }).select('_id').limit(200).lean(),
-  ]);
+      const [matchingClients, matchingMarques, matchingModeles] = await Promise.all([
+        Client.find({
+          $or: [
+            { nom: { $regex: rx, $options: 'i' } },
+            { phone: { $regex: rx, $options: 'i' } },
+            { phone2: { $regex: rx, $options: 'i' } },
+            { code: { $regex: rx, $options: 'i' } },
+            { codeFidelite: { $regex: rx, $options: 'i' } },
+          ],
+        }).select('_id').limit(1000).lean(),
+        Marque.find({ nom: { $regex: rx, $options: 'i' } }).select('_id').limit(200).lean(),
+        Modele.find({ nom: { $regex: rx, $options: 'i' } }).select('_id').limit(200).lean(),
+      ]);
 
-  const clientIds = matchingClients.map((c) => c._id);
-  const marqueIds = matchingMarques.map((m) => m._id);
-  const modeleIds = matchingModeles.map((m) => m._id);
+      const clientIds = matchingClients.map((c) => c._id);
+      const marqueIds = matchingMarques.map((m) => m._id);
+      const modeleIds = matchingModeles.map((m) => m._id);
 
-  const searchConditions = [
-    { numero: { $regex: rx, $options: 'i' } },
-    { problemeDeclare: { $regex: rx, $options: 'i' } },
-    { note: { $regex: rx, $options: 'i' } },
-    { panneType: { $regex: rx, $options: 'i' } },
-    ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
-    ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
-    ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
-  ];
+      const searchConditions = [
+        { numero: { $regex: rx, $options: 'i' } },
+        { problemeDeclare: { $regex: rx, $options: 'i' } },
+        { note: { $regex: rx, $options: 'i' } },
+        { panneType: { $regex: rx, $options: 'i' } },
+        ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
+        ...(marqueIds.length > 0 ? [{ marque: { $in: marqueIds } }] : []),
+        ...(modeleIds.length > 0 ? [{ modele: { $in: modeleIds } }] : []),
+      ];
 
-  if (query.$or) {
-    query.$and = [
-      ...(query.$and || []),
-      { $or: query.$or },
-      { $or: searchConditions },
-    ];
-    delete query.$or;
-  } else {
-    query.$or = searchConditions;
-  }
-}
+      if (query.$or) {
+        query.$and = [
+          ...(query.$and || []),
+          { $or: query.$or },
+          { $or: searchConditions },
+        ];
+        delete query.$or;
+      } else {
+        query.$or = searchConditions;
+      }
+    }
 
-    // ✅ Filtre dates
     if (dateDebut || dateFin) {
       query.createdAt = {};
       if (dateDebut) query.createdAt.$gte = new Date(dateDebut);
@@ -404,20 +422,37 @@ if (search && String(search).trim()) {
       }
     }
 
+    if (dateModifDebut || dateModifFin) {
+      query.updatedAt = {};
+      if (dateModifDebut) query.updatedAt.$gte = new Date(dateModifDebut);
+      if (dateModifFin) {
+        const endDate = new Date(dateModifFin);
+        endDate.setHours(23, 59, 59, 999);
+        query.updatedAt.$lte = endDate;
+      }
+    }
+
+    const allowedSortFields = ['createdAt', 'updatedAt', 'numero', 'prix', 'acompte'];
+    let safeSort = '-createdAt';
+    if (sort && typeof sort === 'string' && sort.trim()) {
+      const field = sort.replace(/^-/, '').trim();
+      if (allowedSortFields.includes(field)) {
+        safeSort = sort;
+      }
+    }
+
     const skip = (pageNum - 1) * limitNum;
 
-    // ✅ Requêtes parallèles AVEC .lean() pour perf max
     const [reparations, total] = await Promise.all([
       getFullPopulate(Reparation.find(query))
-        .sort(sort)
+        .sort(safeSort)
         .skip(skip)
         .limit(limitNum)
         .lean(),
       Reparation.countDocuments(query),
     ]);
 
-    // ✅ Enrichir manuellement les virtuals (lean ne les calcule pas)
-    const reparationsWithReste = reparations.map(enrichReparation);
+    const reparationsWithReste = reparations.map(enrichReparation).filter(Boolean);
 
     const duration = Date.now() - startTime;
     logger.info(`📋 getAll: ${total} réparations, ${reparations.length} retournées en ${duration}ms`);
@@ -434,9 +469,11 @@ if (search && String(search).trim()) {
     });
   } catch (error) {
     logger.error('Erreur getAll reparations:', error);
+    console.error('❌ [getAll] FULL ERROR:', { message: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des réparations',
+      ...(process.env.NODE_ENV !== 'production' && { debug: error.message }),
     });
   }
 };
@@ -705,9 +742,12 @@ exports.update = async (req, res) => {
       representant, reparateur, reparateurSAV,
       datePrevisionnelle, isReparable, isNotified,
       envoyerSMS = false,
+      dateModification,
     } = req.body;
 
-    // ✅ Validations
+    console.log('🔍 [UPDATE] req.user.role =', req.user?.role);
+    console.log('🔍 [UPDATE] dateModification reçue =', dateModification);
+
     if (client !== undefined && client !== null && client !== '') {
       const currentClientId = reparation.client ? reparation.client.toString() : null;
       if (client !== currentClientId) {
@@ -737,7 +777,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ✅ Détection changement de statut
     const oldStatusId = reparation.status?.toString();
     let oldStatusLabel = '';
     if (oldStatusId) {
@@ -772,7 +811,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ✅ Snapshot des anciennes valeurs
     const oldValues = {
       client: reparation.client,
       categorie: reparation.categorie,
@@ -798,7 +836,6 @@ exports.update = async (req, res) => {
       isNotified: reparation.isNotified,
     };
 
-    // ✅ Application des changements
     if (client !== undefined && client !== null && client !== '') {
       reparation.client = client;
     }
@@ -836,7 +873,6 @@ exports.update = async (req, res) => {
     reparation.isReparable = isReparable !== undefined ? isReparable : reparation.isReparable;
     reparation.isNotified = isNotified !== undefined ? isNotified : reparation.isNotified;
 
-    // ✅ Diagnostic & imprévus
     if (diagnosticImprevusData !== undefined) {
       const oldDiag = reparation.diagnosticImprevus || {};
       const newImprevus = (diagnosticImprevusData.imprevus || []).filter(
@@ -882,14 +918,12 @@ exports.update = async (req, res) => {
       };
     }
 
-    // ✅ paymentType
     const finalPrix = reparation.prix || 0;
     const finalAcompte = reparation.acompte || 0;
     if (finalAcompte >= finalPrix && finalPrix > 0) reparation.paymentType = 'paid';
     else if (finalAcompte > 0 && finalAcompte < finalPrix) reparation.paymentType = 'partial';
     else reparation.paymentType = 'unpaid';
 
-    // ✅ dateLivraison automatique
     if (status) {
       const newStatusDoc = await Status.findById(status);
       if (newStatusDoc && newStatusDoc.label === 'Livré') {
@@ -897,7 +931,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ✅ Tracking des modifications
     const trackedFields = [
       'client',
       'prix', 'acompte', 'status', 'reparateur', 'reparateurSAV',
@@ -980,7 +1013,6 @@ exports.update = async (req, res) => {
       logger.info(`📝 ${newModifications.length} modification(s) pour ${reparation.numero}`);
     }
 
-    // ✅ Restauration automatique du stock (si statut → NON REPARE)
     let stockRestauration = null;
 
     if (status && status !== oldStatusId) {
@@ -1016,7 +1048,66 @@ exports.update = async (req, res) => {
       }
     }
 
+    // ============================================================
+    // ✅ NOUVEAU : si admin + dateModification → ajouter une entrée
+    //    dans l'historique ET préparer la date à forcer
+    // ============================================================
+    const userRole = (req.user?.role || '').toString().toUpperCase().trim();
+    const isAdmin = userRole === 'ADMIN';
+
+    let forcedUpdatedAt = null;
+
+    if (isAdmin && dateModification) {
+      const parsed = new Date(dateModification);
+      if (!isNaN(parsed.getTime())) {
+        forcedUpdatedAt = parsed;
+
+        // ✅ Mémoriser l'ancienne date de modification AVANT d'écrire
+        const oldUpdatedAt = reparation.updatedAt;
+
+        // ✅ Ajouter une entrée dans l'historique AVANT le save() principal
+        reparation.modifications = [
+          ...(reparation.modifications || []),
+          {
+            field: 'updatedAt',
+            oldValue: oldUpdatedAt,
+            newValue: forcedUpdatedAt,
+            modifiedBy: req.user.id,
+            modifiedAt: new Date(),
+            comment: 'Date de modification forcée par admin',
+          },
+        ];
+
+        logger.info(
+          `🕒 [UPDATE] Date de modification forcée: ${reparation.numero} → ${forcedUpdatedAt.toISOString()} par ${req.user.username}`
+        );
+      } else {
+        logger.warn(`⚠️ dateModification invalide: "${dateModification}"`);
+      }
+    }
+
+    const originalTimestamps = reparation.$timestamps;
+    if (forcedUpdatedAt) {
+      reparation.$timestamps = false;
+      reparation.updatedAt = forcedUpdatedAt;
+    }
+
     await reparation.save();
+
+    reparation.$timestamps = originalTimestamps ?? true;
+
+    let dateModifUpdated = false;
+    if (forcedUpdatedAt) {
+      try {
+        const result = await Reparation.collection.updateOne(
+          { _id: reparation._id },
+          { $set: { updatedAt: forcedUpdatedAt } }
+        );
+        dateModifUpdated = (result.matchedCount ?? 0) > 0;
+      } catch (err) {
+        logger.error('Erreur updateOne dateModification:', err);
+      }
+    }
 
     let smsInfo = null;
     if (envoyerSMS) {
@@ -1029,6 +1120,11 @@ exports.update = async (req, res) => {
 
     const populated = await getFullPopulate(Reparation.findById(reparation._id));
 
+    if (forcedUpdatedAt) {
+      console.log('🔍 [UPDATE] updatedAt réel en BDD =', populated?.updatedAt);
+      console.log('🔍 [UPDATE] date forcée demandée =', forcedUpdatedAt.toISOString());
+    }
+
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
 
     res.json({
@@ -1036,6 +1132,7 @@ exports.update = async (req, res) => {
       message: 'Réparation modifiée avec succès',
       sms: smsInfo,
       stockRestauration,
+      dateModifUpdated,
       data: enrichReparation(populated.toObject()),
     });
   } catch (error) {
@@ -1094,7 +1191,6 @@ exports.changeStatus = async (req, res) => {
       },
     ];
 
-    // ✅ Restauration automatique du stock
     let stockRestauration = null;
 
     const wasNonRepare = STATUTS_NON_REPARE.includes(oldStatusLabel);

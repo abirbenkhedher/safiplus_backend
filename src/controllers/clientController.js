@@ -1,3 +1,4 @@
+const XLSX = require('xlsx');
 const Client = require('../models/Client');
 const Reparation = require('../models/Reparation');
 const logger = require('../config/logger');
@@ -14,6 +15,14 @@ const isDefaultPhone = (phone) => {
   if (!phone) return false;
   const cleaned = String(phone).replace(/[^0-9]/g, '');
   return cleaned === DEFAULT_PHONE;
+};
+
+// ============================================================
+// ✅ Helper : normalise un téléphone (chiffres uniquement)
+// ============================================================
+const normalizePhone = (phone) => {
+  if (!phone) return '';
+  return String(phone).replace(/[^0-9]/g, '').trim();
 };
 
 // ============================================================
@@ -543,6 +552,273 @@ exports.deleteMany = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression multiple',
+    });
+  }
+};
+// ============================================================
+// ✅ POST - Importer des clients depuis un fichier Excel
+// ============================================================
+exports.importClients = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Aucun fichier fourni',
+      });
+    }
+
+    // ✅ 1. Lire le fichier Excel (raw: true pour préserver les cellules)
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    // ✅ 2. Convertir en tableau 2D (array of arrays)
+    const rawRows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,          // ← renvoie un tableau [ [ligne1], [ligne2], ... ]
+      defval: '',         // ← valeur par défaut si cellule vide
+      raw: false,         // ← utilise les valeurs formatées (ex: "23946779")
+      blankrows: false,   // ← ignore les lignes totalement vides
+    });
+
+    if (!rawRows.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le fichier est vide',
+      });
+    }
+
+    // ✅ 3. Détecter automatiquement la ligne d'en-tête
+    //    On cherche la première ligne qui contient au moins "nom" (peu importe la casse/accents)
+    const normalize = (str) =>
+      String(str || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]/g, '');
+
+    let headerRowIndex = -1;
+    for (let i = 0; i < Math.min(rawRows.length, 20); i++) {
+      const row = rawRows[i].map((c) => normalize(c));
+      // On considère que c'est la ligne d'en-tête si elle contient "nom"
+      // et au moins 2 autres colonnes typiques
+      const hasNom = row.some((c) => c === 'nom' || c === 'nomclient' || c === 'name');
+      const hasPhone = row.some((c) =>
+        ['telephone', 'telephone1', 'tel', 'phone', 'gsm', 'mobile'].includes(c)
+      );
+      const hasCodeFid = row.some((c) =>
+        ['codefidelite', 'fidelite', 'codefid', 'fidelity', 'code'].includes(c)
+      );
+
+      if (hasNom && (hasPhone || hasCodeFid)) {
+        headerRowIndex = i;
+        break;
+      }
+    }
+
+    if (headerRowIndex === -1) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Impossible de trouver la ligne d'en-tête. Le fichier doit contenir au minimum les colonnes 'Nom' et 'Téléphone'.",
+      });
+    }
+
+    // ✅ 4. Récupérer les en-têtes + les données
+    const headers = rawRows[headerRowIndex].map((h) => String(h || '').trim());
+    const dataRows = rawRows.slice(headerRowIndex + 1);
+
+    logger.info(
+      `📄 [IMPORT] En-tête trouvée ligne ${headerRowIndex + 1}: ${headers.join(' | ')}`
+    );
+    logger.info(`📄 [IMPORT] Nombre de lignes de données: ${dataRows.length}`);
+
+    // ✅ 5. Table de correspondance : nom de champ → alias possibles
+    const FIELD_ALIASES = {
+      nom: ['nom', 'nomclient', 'nomcomplet', 'name', 'client'],
+      phone: ['telephone', 'telephone1', 'tel', 'phone', 'gsm', 'mobile'],
+      phone2: ['telephone2', 'tel2', 'phone2', 'gsm2'],
+      email: ['email', 'mail', 'email1'],
+      adresse: ['adresse', 'address', 'localisation'],
+      zone: ['zone', 'region', 'secteur'],
+      codeFidelite: ['codefidelite', 'fidelite', 'codefid', 'fidelity'],
+    };
+
+    // ✅ Helper : récupère la colonne correspondant à un champ
+    const getColumnIndex = (targetField) => {
+      const aliases = FIELD_ALIASES[targetField] || [];
+      for (let i = 0; i < headers.length; i++) {
+        const normalized = normalize(headers[i]);
+        if (aliases.includes(normalized)) return i;
+      }
+      return -1;
+    };
+
+    // ✅ Pré-calculer les index de colonnes (1 seule fois)
+    const colIndex = {
+      nom: getColumnIndex('nom'),
+      phone: getColumnIndex('phone'),
+      phone2: getColumnIndex('phone2'),
+      email: getColumnIndex('email'),
+      adresse: getColumnIndex('adresse'),
+      zone: getColumnIndex('zone'),
+      codeFidelite: getColumnIndex('codeFidelite'),
+    };
+
+    logger.info('📄 [IMPORT] Index colonnes:', colIndex);
+
+    if (colIndex.nom === -1) {
+      return res.status(400).json({
+        success: false,
+        message: "La colonne 'Nom' est introuvable dans le fichier",
+      });
+    }
+    if (colIndex.phone === -1) {
+      return res.status(400).json({
+        success: false,
+        message: "La colonne 'Téléphone' est introuvable dans le fichier",
+      });
+    }
+
+    // ✅ 6. Traitement ligne par ligne
+    const created = [];
+    const duplicates = [];
+    const errors = [];
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const rawRow = dataRows[i];
+      const lineNumber = headerRowIndex + i + 2; // +2 car Excel 1-indexé + en-tête
+
+      // Skip les lignes totalement vides
+      if (!rawRow || rawRow.every((c) => !c || String(c).trim() === '')) {
+        continue;
+      }
+
+      const get = (field) => {
+        const idx = colIndex[field];
+        if (idx === -1) return '';
+        const v = rawRow[idx];
+        return v === undefined || v === null ? '' : String(v).trim();
+      };
+
+      try {
+        const nom = get('nom');
+        const phoneRaw = get('phone');
+        const phone2Raw = get('phone2');
+        const email = get('email');
+        const adresse = get('adresse');
+        const zone = get('zone');
+        const codeFidelite = get('codeFidelite');
+
+        // ✅ Validations
+        if (!nom) {
+          errors.push({ line: lineNumber, reason: 'Nom manquant', raw: rawRow });
+          continue;
+        }
+
+        const phone = normalizePhone(phoneRaw);
+        const phone2 = normalizePhone(phone2Raw);
+
+        if (!phone) {
+          errors.push({
+            line: lineNumber,
+            reason: 'Téléphone manquant',
+            nom,
+            raw: rawRow,
+          });
+          continue;
+        }
+
+        if (phone.length < 6 && phone !== DEFAULT_PHONE) {
+          errors.push({
+            line: lineNumber,
+            reason: `Téléphone invalide: "${phoneRaw}"`,
+            nom,
+            raw: rawRow,
+          });
+          continue;
+        }
+
+        // ✅ Vérifier doublon
+        const phoneVariants = [phone];
+        if (phone2) phoneVariants.push(phone2);
+
+        const existing = await Client.findOne({
+          $or: [
+            { phone: { $in: phoneVariants } },
+            { phone2: { $in: phoneVariants } },
+          ],
+        });
+
+        if (existing) {
+          duplicates.push({
+            line: lineNumber,
+            nom: existing.nom,
+            phone: existing.phone,
+            code: existing.code,
+            codeFidelite: existing.codeFidelite,
+            zone: existing.zone || null,
+            excelNom: nom,
+            excelPhone: phone,
+            excelCodeFidelite: codeFidelite || null,
+          });
+          continue;
+        }
+
+        // ✅ Créer le nouveau client
+        const clientData = {
+          nom,
+          phone,
+          isActive: true,
+        };
+        if (phone2) clientData.phone2 = phone2;
+        if (email) clientData.email = email;
+        if (adresse) clientData.adresse = adresse;
+        if (zone) clientData.zone = zone;
+        if (codeFidelite) clientData.codeFidelite = codeFidelite.toUpperCase();
+
+        const newClient = await Client.create(clientData);
+
+        created.push({
+          line: lineNumber,
+          nom: newClient.nom,
+          code: newClient.code,
+          codeFidelite: newClient.codeFidelite,
+          phone: newClient.phone,
+          zone: newClient.zone || null,
+        });
+      } catch (err) {
+        logger.error(`❌ [IMPORT] Erreur ligne ${lineNumber}:`, err);
+        errors.push({
+          line: lineNumber,
+          reason: err.message,
+          nom: rawRow[colIndex.nom] || '?',
+          raw: rawRow,
+        });
+      }
+    }
+
+    logger.info(
+      `📥 [IMPORT] Terminé: ${created.length} créés, ${duplicates.length} doublons, ${errors.length} erreurs`
+    );
+
+    res.json({
+      success: true,
+      message: `Import terminé: ${created.length} créé(s), ${duplicates.length} doublon(s), ${errors.length} erreur(s)`,
+      data: {
+        created,
+        duplicates,
+        errors,
+        total: dataRows.length,
+        headers, // ← utile pour debug côté frontend
+        headerRowIndex: headerRowIndex + 1,
+      },
+    });
+  } catch (error) {
+    logger.error('Erreur importClients:', error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur lors de l'import",
+      error: error.message,
     });
   }
 };
