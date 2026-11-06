@@ -128,6 +128,11 @@ const reparationSchema = new mongoose.Schema({
   dateLivraison: {
     type: Date
   },
+    dateCloture: {
+    type: Date,
+    default: null,
+    index: true, // ✅ pour accélérer les filtres
+  },
   isReparable: {
     type: Boolean,
     default: true

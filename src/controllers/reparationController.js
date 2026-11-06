@@ -20,6 +20,13 @@ const STATUTS_NON_REPARE = [
   'SORTIE NON REPARE',
 ];
 
+const STATUTS_CLOTURE = [
+  'REPARE',
+  'SAV REPARE',
+  'SORTIE REPARE',
+  'SAV SORTIE REPARE',
+];
+
 const OBJECTID_FIELDS_TO_CLEAN = [
   'marque', 'modele', 'reparateur', 'reparateurSAV',
   'representant', 'categorie', 'objet', 'client', 'status',
@@ -82,6 +89,28 @@ function enrichReparation(r) {
       (i) => i.accepte === null || i.accepte === undefined
     ).length,
   };
+}
+
+// ============================================================
+// ✅ NOUVEAU : détermine si une réparation est clôturée
+//    (statut "sortie réparée" ET reste à payer = 0)
+// ============================================================
+function isReparationCloturee(reparation, statusLabel) {
+  const label = String(statusLabel || '')
+    .toUpperCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+
+  if (!STATUTS_CLOTURE.includes(label)) return false;
+
+  const imprevusAcceptes = (reparation.diagnosticImprevus?.imprevus || [])
+    .filter((i) => i.accepte === true)
+    .reduce((sum, i) => sum + (Number(i.prixSupplementaire) || 0), 0);
+
+  const prixTotal = (Number(reparation.prix) || 0) + imprevusAcceptes;
+  const acompte = Number(reparation.acompte) || 0;
+
+  return acompte >= prixTotal && prixTotal > 0;
 }
 
 async function syncPannesWithCategories(panneNoms, categorieId) {
@@ -270,6 +299,7 @@ exports.getAll = async (req, res) => {
       search, status, categorie, client, reparateur, createdBy, commercial,
       famille, dateDebut, dateFin, zone,
       dateModifDebut, dateModifFin,
+      dateClotureDebut, dateClotureFin, // ✅ NOUVEAU
       limit = 20, page = 1, sort = '-createdAt',
     } = req.query;
 
@@ -432,7 +462,20 @@ exports.getAll = async (req, res) => {
       }
     }
 
-    const allowedSortFields = ['createdAt', 'updatedAt', 'numero', 'prix', 'acompte'];
+    // ✅ NOUVEAU : filtre date de clôture
+    if (dateClotureDebut || dateClotureFin) {
+      query.dateCloture = { $ne: null };
+      if (dateClotureDebut) {
+        query.dateCloture.$gte = new Date(dateClotureDebut);
+      }
+      if (dateClotureFin) {
+        const endDate = new Date(dateClotureFin);
+        endDate.setHours(23, 59, 59, 999);
+        query.dateCloture.$lte = endDate;
+      }
+    }
+
+    const allowedSortFields = ['createdAt', 'updatedAt', 'dateCloture', 'numero', 'prix', 'acompte'];
     let safeSort = '-createdAt';
     if (sort && typeof sort === 'string' && sort.trim()) {
       const field = sort.replace(/^-/, '').trim();
@@ -567,6 +610,7 @@ exports.getPublicByNumero = async (req, res) => {
         datePrevisionnelle: reparation.datePrevisionnelle,
         dateFinReelle: reparation.dateFinReelle,
         dateLivraison: reparation.dateLivraison,
+        dateCloture: reparation.dateCloture || null,
         prix: reparation.prix,
         acompte: reparation.acompte,
         prixTotal,
@@ -695,6 +739,15 @@ exports.create = async (req, res) => {
       }],
     });
 
+    // ✅ NOUVEAU : si la réparation est créée directement clôturée → enregistrer dateCloture
+    const statusLabel = (statusExists.label || '').toUpperCase().trim();
+    if (isReparationCloturee(reparation, statusLabel)) {
+      reparation.dateCloture = new Date();
+      logger.info(
+        `🔒 Réparation créée directement clôturée: ${statusLabel}`
+      );
+    }
+
     await reparation.save();
 
     await syncPannesWithCategories(cleanPanneTypes, categorie);
@@ -743,10 +796,12 @@ exports.update = async (req, res) => {
       datePrevisionnelle, isReparable, isNotified,
       envoyerSMS = false,
       dateModification,
+      dateCloture: dateClotureOverride, // ✅ NOUVEAU
     } = req.body;
 
     console.log('🔍 [UPDATE] req.user.role =', req.user?.role);
     console.log('🔍 [UPDATE] dateModification reçue =', dateModification);
+    console.log('🔍 [UPDATE] dateClotureOverride reçue =', dateClotureOverride);
 
     if (client !== undefined && client !== null && client !== '') {
       const currentClientId = reparation.client ? reparation.client.toString() : null;
@@ -834,6 +889,7 @@ exports.update = async (req, res) => {
       datePrevisionnelle: reparation.datePrevisionnelle,
       isReparable: reparation.isReparable,
       isNotified: reparation.isNotified,
+      dateCloture: reparation.dateCloture,
     };
 
     if (client !== undefined && client !== null && client !== '') {
@@ -940,6 +996,7 @@ exports.update = async (req, res) => {
       'categorie', 'objet', 'observation',
       'diagnostic', 'diagnosticImprevus', 'travauxEffectues', 'piecesUtilisees',
       'isReparable', 'isNotified',
+      'dateCloture', // ✅ NOUVEAU
     ];
 
     const newModifications = [];
@@ -985,6 +1042,10 @@ exports.update = async (req, res) => {
             note: newVal?.decisionClient?.note || '',
           },
         });
+        changed = oldStr !== newStr;
+      } else if (field === 'dateCloture') {
+        const oldStr = oldVal ? new Date(oldVal).toISOString() : '';
+        const newStr = newVal ? new Date(newVal).toISOString() : '';
         changed = oldStr !== newStr;
       } else if (typeof oldVal === 'boolean' || typeof newVal === 'boolean') {
         changed = Boolean(oldVal) !== Boolean(newVal);
@@ -1048,9 +1109,10 @@ exports.update = async (req, res) => {
       }
     }
 
+     
+
     // ============================================================
-    // ✅ NOUVEAU : si admin + dateModification → ajouter une entrée
-    //    dans l'historique ET préparer la date à forcer
+    // ✅ Si admin + dateModification → ajouter une entrée dans l'historique
     // ============================================================
     const userRole = (req.user?.role || '').toString().toUpperCase().trim();
     const isAdmin = userRole === 'ADMIN';
@@ -1062,10 +1124,8 @@ exports.update = async (req, res) => {
       if (!isNaN(parsed.getTime())) {
         forcedUpdatedAt = parsed;
 
-        // ✅ Mémoriser l'ancienne date de modification AVANT d'écrire
         const oldUpdatedAt = reparation.updatedAt;
 
-        // ✅ Ajouter une entrée dans l'historique AVANT le save() principal
         reparation.modifications = [
           ...(reparation.modifications || []),
           {
@@ -1124,6 +1184,7 @@ exports.update = async (req, res) => {
       console.log('🔍 [UPDATE] updatedAt réel en BDD =', populated?.updatedAt);
       console.log('🔍 [UPDATE] date forcée demandée =', forcedUpdatedAt.toISOString());
     }
+    console.log('🔍 [UPDATE] dateCloture en BDD =', populated?.dateCloture);
 
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
 
@@ -1219,6 +1280,13 @@ exports.changeStatus = async (req, res) => {
           },
         ];
       }
+    }
+
+    // ✅ NOUVEAU : calcul dateCloture dans changeStatus
+    const cloture = isReparationCloturee(reparation, newStatusLabel);
+    if (cloture && !reparation.dateCloture) {
+      reparation.dateCloture = new Date();
+      logger.info(`🔒 Réparation ${reparation.numero} clôturée le ${reparation.dateCloture.toISOString()}`);
     }
 
     await reparation.save();

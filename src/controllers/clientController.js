@@ -26,16 +26,304 @@ const normalizePhone = (phone) => {
 };
 
 // ============================================================
-// GET - Liste des clients avec recherche
+// ✅ Helper : normalise une chaîne pour comparer les en-têtes
+// ============================================================
+const normalizeHeader = (str) =>
+  String(str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+
+// ============================================================
+// ✅ Helper : alias des champs (tolérance aux variations)
+// ============================================================
+const FIELD_ALIASES = {
+  nom: ['nom', 'nomclient', 'nomcomplet', 'name', 'client'],
+  phone: ['telephone', 'telephone1', 'tel', 'phone', 'gsm', 'mobile'],
+  phone2: ['telephone2', 'tel2', 'phone2', 'gsm2'],
+  email: ['email', 'mail', 'email1'],
+  adresse: ['adresse', 'address', 'localisation'],
+  zone: ['zone', 'region', 'secteur'],
+  codeFidelite: ['codefidelite', 'fidelite', 'codefid', 'fidelity'],
+};
+
+// ============================================================
+// ✅ Helper : analyse un fichier Excel (SANS rien créer)
+//    Règles :
+//    - Si téléphone existe déjà → "notCreated" (raison: déjà existant)
+//    - Si téléphone vide          → "notCreated" (raison: manquant)
+//    - Sinon                      → "toCreate"
+// ============================================================
+async function analyzeImportFile(fileBuffer) {
+  // ✅ 1. Valider le buffer
+  if (!fileBuffer || !Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
+    return {
+      error:
+        'Le fichier est vide ou invalide. Vérifiez que vous avez bien sélectionné un fichier Excel.',
+    };
+  }
+
+  logger.info(`📄 [IMPORT] Taille du buffer: ${fileBuffer.length} octets`);
+
+  // ✅ 2. Lire le workbook
+  let workbook;
+  try {
+    workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+  } catch (err) {
+    logger.error('❌ [IMPORT] Erreur XLSX.read:', err);
+    return {
+      error: `Impossible de lire le fichier Excel: ${err.message}. Le fichier est peut-être corrompu ou dans un format non supporté.`,
+    };
+  }
+
+  // ✅ 3. Valider le workbook
+  if (!workbook || !Array.isArray(workbook.SheetNames)) {
+    return { error: 'Le fichier ne contient aucune feuille lisible.' };
+  }
+
+  if (workbook.SheetNames.length === 0) {
+    return { error: 'Le fichier ne contient aucune feuille.' };
+  }
+
+  logger.info(
+    `📄 [IMPORT] Feuilles détectées (${workbook.SheetNames.length}): ${workbook.SheetNames.join(' | ')}`
+  );
+
+  // ✅ 4. Récupérer la première feuille
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+
+  if (!sheet) {
+    return { error: `La feuille "${sheetName}" est introuvable ou vide.` };
+  }
+
+  // ✅ 5. Convertir en tableau 2D
+  let rawRows;
+  try {
+    rawRows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: '',
+      raw: false,
+      blankrows: false,
+    });
+  } catch (err) {
+    logger.error('❌ [IMPORT] Erreur sheet_to_json:', err);
+    return {
+      error: `Impossible de convertir la feuille en tableau: ${err.message}`,
+    };
+  }
+
+  // ✅ 6. Valider le résultat
+  if (!rawRows || !Array.isArray(rawRows) || rawRows.length === 0) {
+    return {
+      error:
+        "Aucune donnée trouvée dans la feuille. Vérifiez que le fichier n'est pas vide.",
+    };
+  }
+
+  logger.info(`📄 [IMPORT] ${rawRows.length} ligne(s) brutes lues`);
+
+  // ✅ 7. Détection de la ligne d'en-tête
+  let headerRowIndex = -1;
+  for (let i = 0; i < Math.min(rawRows.length, 20); i++) {
+    const row = (rawRows[i] || []).map((c) => normalizeHeader(c));
+    const hasNom = row.some((c) =>
+      ['nom', 'nomclient', 'nomcomplet', 'name', 'client'].includes(c)
+    );
+    const hasPhone = row.some((c) =>
+      ['telephone', 'telephone1', 'tel', 'phone', 'gsm', 'mobile'].includes(c)
+    );
+    if (hasNom && hasPhone) {
+      headerRowIndex = i;
+      break;
+    }
+  }
+
+  if (headerRowIndex === -1) {
+    return {
+      error:
+        "Impossible de trouver la ligne d'en-tête. Le fichier doit contenir au minimum les colonnes 'Nom' et 'Téléphone'.",
+    };
+  }
+
+  const headers = rawRows[headerRowIndex].map((h) => String(h || '').trim());
+  const dataRows = rawRows.slice(headerRowIndex + 1);
+
+  logger.info(
+    `📄 [IMPORT] En-tête ligne ${headerRowIndex + 1}: ${headers.join(' | ')}`
+  );
+  logger.info(`📄 [IMPORT] ${dataRows.length} ligne(s) de données`);
+
+  // ✅ 8. Index des colonnes
+  const getColumnIndex = (targetField) => {
+    const aliases = FIELD_ALIASES[targetField] || [];
+    for (let i = 0; i < headers.length; i++) {
+      if (aliases.includes(normalizeHeader(headers[i]))) return i;
+    }
+    return -1;
+  };
+
+  const colIndex = {
+    nom: getColumnIndex('nom'),
+    phone: getColumnIndex('phone'),
+    phone2: getColumnIndex('phone2'),
+    email: getColumnIndex('email'),
+    adresse: getColumnIndex('adresse'),
+    zone: getColumnIndex('zone'),
+    codeFidelite: getColumnIndex('codeFidelite'),
+  };
+
+  logger.info('📄 [IMPORT] Index colonnes:', colIndex);
+
+  if (colIndex.nom === -1) {
+    return { error: "La colonne 'Nom' est introuvable dans le fichier" };
+  }
+  if (colIndex.phone === -1) {
+    return { error: "La colonne 'Téléphone' est introuvable dans le fichier" };
+  }
+
+  // ✅ 9. Analyse ligne par ligne
+  const toCreate = [];
+  const notCreated = [];
+  const errors = [];
+
+  for (let i = 0; i < dataRows.length; i++) {
+    const rawRow = dataRows[i];
+    const lineNumber = headerRowIndex + i + 2;
+
+    if (!rawRow || rawRow.every((c) => !c || String(c).trim() === '')) {
+      continue;
+    }
+
+    const get = (field) => {
+      const idx = colIndex[field];
+      if (idx === -1) return '';
+      const v = rawRow[idx];
+      return v === undefined || v === null ? '' : String(v).trim();
+    };
+
+    try {
+      const nom = get('nom');
+      const phoneRaw = get('phone');
+      const phone2Raw = get('phone2');
+      const email = get('email');
+      const adresse = get('adresse');
+      const zone = get('zone');
+      const codeFidelite = get('codeFidelite');
+
+      if (!nom) {
+        errors.push({ line: lineNumber, reason: 'Nom manquant', nom: '?' });
+        continue;
+      }
+
+      const phone = normalizePhone(phoneRaw);
+      const phone2 = normalizePhone(phone2Raw);
+
+      // ✅ RÈGLE 1 : téléphone vide → NON CRÉÉ
+      if (!phone) {
+        notCreated.push({
+          line: lineNumber,
+          reason: 'Téléphone manquant',
+          nom,
+          phone: null,
+          phone2: phone2 || null,
+          email: email || null,
+          adresse: adresse || null,
+          zone: zone || null,
+          codeFidelite: codeFidelite || null,
+        });
+        continue;
+      }
+
+      // ✅ Validation téléphone (min 6 chiffres)
+      if (phone.length < 6) {
+        errors.push({
+          line: lineNumber,
+          reason: `Téléphone invalide: "${phoneRaw}"`,
+          nom,
+        });
+        continue;
+      }
+
+      // ✅ RÈGLE 2 : téléphone existe déjà → NON CRÉÉ
+      const existing = await Client.findOne({ phone });
+      if (existing) {
+        notCreated.push({
+          line: lineNumber,
+          reason: 'Téléphone déjà existant',
+          nom,
+          phone,
+          phone2: phone2 || null,
+          email: email || null,
+          adresse: adresse || null,
+          zone: zone || null,
+          codeFidelite: codeFidelite || null,
+          existingClient: {
+            nom: existing.nom,
+            code: existing.code,
+            codeFidelite: existing.codeFidelite || null,
+          },
+        });
+        continue;
+      }
+
+      // ✅ SINON → À CRÉER
+      const clientData = {
+        nom,
+        phone,
+        isActive: true,
+      };
+      if (phone2) clientData.phone2 = phone2;
+      if (email) clientData.email = email;
+      if (adresse) clientData.adresse = adresse;
+      if (zone) clientData.zone = zone;
+      if (codeFidelite) {
+        clientData.codeFidelite = codeFidelite.toUpperCase();
+      }
+
+      toCreate.push({
+        line: lineNumber,
+        clientData,
+      });
+    } catch (err) {
+      logger.error(`❌ [IMPORT] Analyse ligne ${lineNumber}:`, err);
+      errors.push({
+        line: lineNumber,
+        reason: err.message,
+        nom: rawRow[colIndex.nom] || '?',
+      });
+    }
+  }
+
+  return {
+    headers,
+    headerRowIndex: headerRowIndex + 1,
+    total: dataRows.length,
+    toCreate,
+    notCreated,
+    errors,
+  };
+}
+
+// ============================================================
+// GET - Liste des clients avec recherche + pagination serveur
 // ============================================================
 exports.getAll = async (req, res) => {
   try {
-    const { search, isActive, limit = 100, page = 1 } = req.query;
+    const {
+      search,
+      isActive,
+      paymentStatus = 'all',
+      hasReparations = 'all',
+      topClients = 'all',
+      limit = 20,
+      page = 1,
+    } = req.query;
 
-    // ✅ Plafonner la limite à 10000 pour éviter les abus tout en
-    //    permettant de charger TOUS les clients si nécessaire
-    const safeLimit = Math.min(Math.max(parseInt(limit) || 100, 1), 10000);
+    const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 200);
     const safePage = Math.max(parseInt(page) || 1, 1);
+    const skip = (safePage - 1) * safeLimit;
 
     const query = {};
 
@@ -44,16 +332,101 @@ exports.getAll = async (req, res) => {
     }
 
     if (search) {
-      query.$text = { $search: search };
+      const rx = new RegExp(
+        String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        'i'
+      );
+      query.$or = [
+        { nom: rx },
+        { phone: rx },
+        { phone2: rx },
+        { email: rx },
+        { code: rx },
+        { adresse: rx },
+        { zone: rx },
+        { codeFidelite: rx },
+      ];
     }
 
-    const skip = (safePage - 1) * safeLimit;
+    const needsAggregation =
+      paymentStatus !== 'all' ||
+      hasReparations !== 'all' ||
+      topClients !== 'all';
+
+    let clientIdsFilter = null;
+
+    if (needsAggregation) {
+      const statsMap = await Reparation.aggregate([
+        { $match: { isDeleted: false } },
+        {
+          $group: {
+            _id: '$client',
+            totalReparations: { $sum: 1 },
+            totalPaye: { $sum: '$acompte' },
+            totalRestant: {
+              $sum: { $subtract: ['$prix', '$acompte'] },
+            },
+          },
+        },
+      ]);
+
+      let filtered = statsMap.filter((s) => s._id);
+
+      if (paymentStatus !== 'all') {
+        filtered = filtered.filter((s) => {
+          const restant = s.totalRestant || 0;
+          const paye = s.totalPaye || 0;
+          if (paymentStatus === 'paid') return restant === 0 && paye > 0;
+          if (paymentStatus === 'unpaid') return restant > 0 && paye === 0;
+          if (paymentStatus === 'partial') return restant > 0 && paye > 0;
+          return true;
+        });
+      }
+
+      if (hasReparations !== 'all') {
+        filtered = filtered.filter((s) => {
+          const count = s.totalReparations || 0;
+          return hasReparations === 'yes' ? count > 0 : count === 0;
+        });
+      }
+
+      if (topClients !== 'all') {
+        const limitTop = parseInt(topClients);
+        filtered = filtered
+          .filter((s) => (s.totalReparations || 0) > 0)
+          .sort(
+            (a, b) => (b.totalReparations || 0) - (a.totalReparations || 0)
+          )
+          .slice(0, limitTop);
+      }
+
+      clientIdsFilter = filtered.map((s) => s._id);
+
+      if (clientIdsFilter.length === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          pagination: { total: 0, page: 1, pages: 0, limit: safeLimit },
+        });
+      }
+
+      if (query.$or) {
+        query.$and = [
+          { $or: query.$or },
+          { _id: { $in: clientIdsFilter } },
+        ];
+        delete query.$or;
+      } else {
+        query._id = { $in: clientIdsFilter };
+      }
+    }
 
     const [clients, total] = await Promise.all([
       Client.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(safeLimit),
+        .limit(safeLimit)
+        .lean(),
       Client.countDocuments(query),
     ]);
 
@@ -62,17 +435,23 @@ exports.getAll = async (req, res) => {
         const reparations = await Reparation.find({
           client: client._id,
           isDeleted: false,
-        });
-        const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
+        }).lean();
+
+        const totalPaye = reparations.reduce(
+          (sum, r) => sum + (r.acompte || 0),
+          0
+        );
         const totalRestant = reparations.reduce(
-          (sum, r) => sum + (r.prix - r.acompte),
+          (sum, r) => sum + ((r.prix || 0) - (r.acompte || 0)),
           0
         );
         const lastReparation =
-          reparations.length > 0 ? reparations[reparations.length - 1] : null;
+          reparations.length > 0
+            ? reparations[reparations.length - 1]
+            : null;
 
         return {
-          ...client.toObject(),
+          ...client,
           totalReparations: reparations.length,
           totalPaye,
           totalRestant,
@@ -192,7 +571,6 @@ exports.create = async (req, res) => {
         .json({ success: false, message: 'Le téléphone est obligatoire' });
     }
 
-    // Ne PAS vérifier l'unicité si c'est le numéro par défaut
     if (!isDefaultPhone(phone)) {
       const existing = await Client.findOne({ phone: phone.trim() });
       if (existing) {
@@ -203,7 +581,6 @@ exports.create = async (req, res) => {
       }
     }
 
-    // ✅ Vérifier l'unicité du code fidélité SI fourni manuellement
     if (codeFidelite && codeFidelite.trim()) {
       const existingFid = await Client.findOne({
         codeFidelite: codeFidelite.trim().toUpperCase(),
@@ -226,11 +603,9 @@ exports.create = async (req, res) => {
     if (codeFidelite && codeFidelite.trim()) {
       clientData.codeFidelite = codeFidelite.trim().toUpperCase();
     }
-
     if (phone2 && phone2.trim() !== '') {
       clientData.phone2 = phone2.trim();
     }
-
     if (email && email.trim() !== '') {
       clientData.email = email.trim();
     }
@@ -281,7 +656,6 @@ exports.update = async (req, res) => {
       });
     }
 
-    // Vérifier unicité téléphone
     if (phone && phone !== client.phone && !isDefaultPhone(phone)) {
       const existing = await Client.findOne({
         phone,
@@ -295,7 +669,6 @@ exports.update = async (req, res) => {
       }
     }
 
-    // ✅ Vérifier unicité code fidélité SI modifié
     if (codeFidelite !== undefined && codeFidelite !== client.codeFidelite) {
       if (codeFidelite && codeFidelite.trim()) {
         const existingFid = await Client.findOne({
@@ -327,7 +700,6 @@ exports.update = async (req, res) => {
     if (phone2 !== undefined) {
       client.phone2 = phone2 && phone2.trim() !== '' ? phone2.trim() : null;
     }
-
     if (email !== undefined) {
       client.email = email && email.trim() !== '' ? email.trim() : null;
     }
@@ -367,7 +739,6 @@ exports.findByPhone = async (req, res) => {
     }
 
     const input = String(phone).trim();
-
     const isFideliteSearch = /^FID-/i.test(input) || /[A-Za-z]/.test(input);
 
     if (isFideliteSearch) {
@@ -376,23 +747,13 @@ exports.findByPhone = async (req, res) => {
       });
 
       if (client) {
-        return res.json({
-          success: true,
-          data: client,
-          exists: true,
-        });
+        return res.json({ success: true, data: client, exists: true });
       }
-
-      return res.json({
-        success: true,
-        data: null,
-        exists: false,
-      });
+      return res.json({ success: true, data: null, exists: false });
     }
 
     const cleanPhone = input.replace(/[^0-9]/g, '');
 
-    // ✅ Si c'est le numéro passager, retourner TOUS les clients passagers
     if (cleanPhone === DEFAULT_PHONE) {
       const passengers = await Client.find({
         phone: DEFAULT_PHONE,
@@ -428,18 +789,10 @@ exports.findByPhone = async (req, res) => {
     });
 
     if (foundClient) {
-      return res.json({
-        success: true,
-        data: foundClient,
-        exists: true,
-      });
+      return res.json({ success: true, data: foundClient, exists: true });
     }
 
-    res.json({
-      success: true,
-      data: null,
-      exists: false,
-    });
+    res.json({ success: true, data: null, exists: false });
   } catch (error) {
     logger.error('Erreur findByPhone:', error);
     res.status(500).json({
@@ -555,231 +908,70 @@ exports.deleteMany = async (req, res) => {
     });
   }
 };
+
 // ============================================================
-// ✅ POST - Importer des clients depuis un fichier Excel
+// ✅ POST - Aperçu de l'import (SANS création)
 // ============================================================
-exports.importClients = async (req, res) => {
+exports.previewImportClients = async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'Aucun fichier fourni',
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Aucun fichier fourni' });
     }
 
-    // ✅ 1. Lire le fichier Excel (raw: true pour préserver les cellules)
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
+    const analysis = await analyzeImportFile(req.file.buffer);
 
-    // ✅ 2. Convertir en tableau 2D (array of arrays)
-    const rawRows = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,          // ← renvoie un tableau [ [ligne1], [ligne2], ... ]
-      defval: '',         // ← valeur par défaut si cellule vide
-      raw: false,         // ← utilise les valeurs formatées (ex: "23946779")
-      blankrows: false,   // ← ignore les lignes totalement vides
+    if (analysis.error) {
+      return res
+        .status(400)
+        .json({ success: false, message: analysis.error });
+    }
+
+    res.json({
+      success: true,
+      message: `Aperçu: ${analysis.toCreate.length} à créer, ${analysis.notCreated.length} non créés, ${analysis.errors.length} erreur(s)`,
+      data: analysis,
     });
+  } catch (error) {
+    logger.error('Erreur previewImportClients:', error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur lors de l'analyse",
+      error: error.message,
+    });
+  }
+};
 
-    if (!rawRows.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le fichier est vide',
-      });
+// ============================================================
+// ✅ POST - Confirmer et exécuter l'import
+// ============================================================
+exports.confirmImportClients = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Aucun fichier fourni' });
     }
 
-    // ✅ 3. Détecter automatiquement la ligne d'en-tête
-    //    On cherche la première ligne qui contient au moins "nom" (peu importe la casse/accents)
-    const normalize = (str) =>
-      String(str || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9]/g, '');
+    const analysis = await analyzeImportFile(req.file.buffer);
 
-    let headerRowIndex = -1;
-    for (let i = 0; i < Math.min(rawRows.length, 20); i++) {
-      const row = rawRows[i].map((c) => normalize(c));
-      // On considère que c'est la ligne d'en-tête si elle contient "nom"
-      // et au moins 2 autres colonnes typiques
-      const hasNom = row.some((c) => c === 'nom' || c === 'nomclient' || c === 'name');
-      const hasPhone = row.some((c) =>
-        ['telephone', 'telephone1', 'tel', 'phone', 'gsm', 'mobile'].includes(c)
-      );
-      const hasCodeFid = row.some((c) =>
-        ['codefidelite', 'fidelite', 'codefid', 'fidelity', 'code'].includes(c)
-      );
-
-      if (hasNom && (hasPhone || hasCodeFid)) {
-        headerRowIndex = i;
-        break;
-      }
+    if (analysis.error) {
+      return res
+        .status(400)
+        .json({ success: false, message: analysis.error });
     }
 
-    if (headerRowIndex === -1) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Impossible de trouver la ligne d'en-tête. Le fichier doit contenir au minimum les colonnes 'Nom' et 'Téléphone'.",
-      });
-    }
-
-    // ✅ 4. Récupérer les en-têtes + les données
-    const headers = rawRows[headerRowIndex].map((h) => String(h || '').trim());
-    const dataRows = rawRows.slice(headerRowIndex + 1);
-
-    logger.info(
-      `📄 [IMPORT] En-tête trouvée ligne ${headerRowIndex + 1}: ${headers.join(' | ')}`
-    );
-    logger.info(`📄 [IMPORT] Nombre de lignes de données: ${dataRows.length}`);
-
-    // ✅ 5. Table de correspondance : nom de champ → alias possibles
-    const FIELD_ALIASES = {
-      nom: ['nom', 'nomclient', 'nomcomplet', 'name', 'client'],
-      phone: ['telephone', 'telephone1', 'tel', 'phone', 'gsm', 'mobile'],
-      phone2: ['telephone2', 'tel2', 'phone2', 'gsm2'],
-      email: ['email', 'mail', 'email1'],
-      adresse: ['adresse', 'address', 'localisation'],
-      zone: ['zone', 'region', 'secteur'],
-      codeFidelite: ['codefidelite', 'fidelite', 'codefid', 'fidelity'],
-    };
-
-    // ✅ Helper : récupère la colonne correspondant à un champ
-    const getColumnIndex = (targetField) => {
-      const aliases = FIELD_ALIASES[targetField] || [];
-      for (let i = 0; i < headers.length; i++) {
-        const normalized = normalize(headers[i]);
-        if (aliases.includes(normalized)) return i;
-      }
-      return -1;
-    };
-
-    // ✅ Pré-calculer les index de colonnes (1 seule fois)
-    const colIndex = {
-      nom: getColumnIndex('nom'),
-      phone: getColumnIndex('phone'),
-      phone2: getColumnIndex('phone2'),
-      email: getColumnIndex('email'),
-      adresse: getColumnIndex('adresse'),
-      zone: getColumnIndex('zone'),
-      codeFidelite: getColumnIndex('codeFidelite'),
-    };
-
-    logger.info('📄 [IMPORT] Index colonnes:', colIndex);
-
-    if (colIndex.nom === -1) {
-      return res.status(400).json({
-        success: false,
-        message: "La colonne 'Nom' est introuvable dans le fichier",
-      });
-    }
-    if (colIndex.phone === -1) {
-      return res.status(400).json({
-        success: false,
-        message: "La colonne 'Téléphone' est introuvable dans le fichier",
-      });
-    }
-
-    // ✅ 6. Traitement ligne par ligne
     const created = [];
-    const duplicates = [];
-    const errors = [];
+    const errors = [...analysis.errors];
 
-    for (let i = 0; i < dataRows.length; i++) {
-      const rawRow = dataRows[i];
-      const lineNumber = headerRowIndex + i + 2; // +2 car Excel 1-indexé + en-tête
-
-      // Skip les lignes totalement vides
-      if (!rawRow || rawRow.every((c) => !c || String(c).trim() === '')) {
-        continue;
-      }
-
-      const get = (field) => {
-        const idx = colIndex[field];
-        if (idx === -1) return '';
-        const v = rawRow[idx];
-        return v === undefined || v === null ? '' : String(v).trim();
-      };
-
+    // ✅ Créer uniquement les clients valides
+    for (const item of analysis.toCreate) {
       try {
-        const nom = get('nom');
-        const phoneRaw = get('phone');
-        const phone2Raw = get('phone2');
-        const email = get('email');
-        const adresse = get('adresse');
-        const zone = get('zone');
-        const codeFidelite = get('codeFidelite');
-
-        // ✅ Validations
-        if (!nom) {
-          errors.push({ line: lineNumber, reason: 'Nom manquant', raw: rawRow });
-          continue;
-        }
-
-        const phone = normalizePhone(phoneRaw);
-        const phone2 = normalizePhone(phone2Raw);
-
-        if (!phone) {
-          errors.push({
-            line: lineNumber,
-            reason: 'Téléphone manquant',
-            nom,
-            raw: rawRow,
-          });
-          continue;
-        }
-
-        if (phone.length < 6 && phone !== DEFAULT_PHONE) {
-          errors.push({
-            line: lineNumber,
-            reason: `Téléphone invalide: "${phoneRaw}"`,
-            nom,
-            raw: rawRow,
-          });
-          continue;
-        }
-
-        // ✅ Vérifier doublon
-        const phoneVariants = [phone];
-        if (phone2) phoneVariants.push(phone2);
-
-        const existing = await Client.findOne({
-          $or: [
-            { phone: { $in: phoneVariants } },
-            { phone2: { $in: phoneVariants } },
-          ],
-        });
-
-        if (existing) {
-          duplicates.push({
-            line: lineNumber,
-            nom: existing.nom,
-            phone: existing.phone,
-            code: existing.code,
-            codeFidelite: existing.codeFidelite,
-            zone: existing.zone || null,
-            excelNom: nom,
-            excelPhone: phone,
-            excelCodeFidelite: codeFidelite || null,
-          });
-          continue;
-        }
-
-        // ✅ Créer le nouveau client
-        const clientData = {
-          nom,
-          phone,
-          isActive: true,
-        };
-        if (phone2) clientData.phone2 = phone2;
-        if (email) clientData.email = email;
-        if (adresse) clientData.adresse = adresse;
-        if (zone) clientData.zone = zone;
-        if (codeFidelite) clientData.codeFidelite = codeFidelite.toUpperCase();
-
-        const newClient = await Client.create(clientData);
+        const newClient = await Client.create(item.clientData);
 
         created.push({
-          line: lineNumber,
+          line: item.line,
           nom: newClient.nom,
           code: newClient.code,
           codeFidelite: newClient.codeFidelite,
@@ -787,34 +979,31 @@ exports.importClients = async (req, res) => {
           zone: newClient.zone || null,
         });
       } catch (err) {
-        logger.error(`❌ [IMPORT] Erreur ligne ${lineNumber}:`, err);
+        logger.error(`❌ [IMPORT] Erreur création ligne ${item.line}:`, err);
         errors.push({
-          line: lineNumber,
+          line: item.line,
           reason: err.message,
-          nom: rawRow[colIndex.nom] || '?',
-          raw: rawRow,
+          nom: item.clientData?.nom || '?',
         });
       }
     }
 
     logger.info(
-      `📥 [IMPORT] Terminé: ${created.length} créés, ${duplicates.length} doublons, ${errors.length} erreurs`
+      `📥 [IMPORT] Terminé: ${created.length} créés, ${analysis.notCreated.length} non créés, ${errors.length} erreurs`
     );
 
     res.json({
       success: true,
-      message: `Import terminé: ${created.length} créé(s), ${duplicates.length} doublon(s), ${errors.length} erreur(s)`,
+      message: `Import terminé: ${created.length} créé(s), ${analysis.notCreated.length} non créé(s), ${errors.length} erreur(s)`,
       data: {
         created,
-        duplicates,
+        notCreated: analysis.notCreated,
         errors,
-        total: dataRows.length,
-        headers, // ← utile pour debug côté frontend
-        headerRowIndex: headerRowIndex + 1,
+        total: analysis.total,
       },
     });
   } catch (error) {
-    logger.error('Erreur importClients:', error);
+    logger.error('Erreur confirmImportClients:', error);
     res.status(500).json({
       success: false,
       message: "Erreur lors de l'import",

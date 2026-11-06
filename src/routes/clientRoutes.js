@@ -19,16 +19,27 @@ const upload = multer({
 });
 
 // ============================================================
-// ✅ IMPORT EXCEL — ADMIN uniquement
-// (avant /:id pour éviter le conflit de route)
+// ✅ IMPORT EXCEL — Aperçu (SANS création)
 // ============================================================
 router.post(
-  '/import',
+  '/import/preview',
   requireAuth,
   requireAdmin,
   requirePermission('clients'),
   upload.single('file'),
-  clientController.importClients
+  clientController.previewImportClients
+);
+
+// ============================================================
+// ✅ IMPORT EXCEL — Confirmation (AVEC création)
+// ============================================================
+router.post(
+  '/import/confirm',
+  requireAuth,
+  requireAdmin,
+  requirePermission('clients'),
+  upload.single('file'),
+  clientController.confirmImportClients
 );
 
 // ============================================================
