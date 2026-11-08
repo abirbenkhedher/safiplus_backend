@@ -207,7 +207,8 @@ exports.exportClientsPost = async (req, res) => {
 // ============================================================
 exports.exportUsers = async (req, res) => {
   try {
-    const users = await User.find().select('-password -refreshToken').sort({ createdAt: -1 });
+    const { userScopeFilter } = require('../services/tenantService');
+    const users = await User.find(userScopeFilter(req)).select('-password -refreshToken').sort({ createdAt: -1 });
 
     const usersWithStats = await Promise.all(
       users.map(async (user) => {

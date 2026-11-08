@@ -2,10 +2,23 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { validateLogin } = require('../utils/validators');
 const logger = require('../config/logger');
+const { getUserBoutiques, getUserOrganisation } = require('../services/tenantService');
+
+// ✅ Multi-tenant : organisation + boutiques accessibles
+const attachTenantInfo = async (user, userData) => {
+  userData.organisation = await getUserOrganisation(user);
+  userData.boutiquesAccessibles = await getUserBoutiques(user);
+  return userData;
+};
 
 // Générer les tokens
 const generateTokens = (user) => {
-  const payload = { id: user._id, username: user.username, role: user.role };
+  const payload = {
+    id: user._id,
+    username: user.username,
+    role: user.role,
+    organisation: user.organisation || null,
+  };
 
   const accessToken = jwt.sign(
     payload,
@@ -66,6 +79,30 @@ const login = async (req, res) => {
       });
     }
 
+    // ✅ Multi-tenant : organisation active + au moins une boutique
+    if (user.role !== 'SUPER_ADMIN') {
+      if (!user.organisation) {
+        return res.status(403).json({
+          success: false,
+          message: "Compte non rattaché à une organisation (lancez la migration : npm run migrate:tenant).",
+        });
+      }
+      const org = await getUserOrganisation(user);
+      if (!org || !org.isActive) {
+        return res.status(403).json({
+          success: false,
+          message: 'Organisation désactivée. Contactez le support.',
+        });
+      }
+      const boutiques = await getUserBoutiques(user);
+      if (boutiques.length === 0) {
+        return res.status(403).json({
+          success: false,
+          message: "Aucune boutique active n'est affectée à votre compte.",
+        });
+      }
+    }
+
     // ✅ Réinitialiser lastActivity à chaque login
     const now = new Date();
     user.lastLogin = now;
@@ -83,6 +120,8 @@ const login = async (req, res) => {
     if (!userData.permissions || !Array.isArray(userData.permissions)) {
       userData.permissions = User.DEFAULT_PERMISSIONS[userData.role] || [];
     }
+
+    await attachTenantInfo(user, userData);
 
     logger.info(`Utilisateur connecté: ${user.username} (${user.role})`);
 
@@ -154,6 +193,8 @@ const getMe = async (req, res) => {
     if (!userData.permissions || !Array.isArray(userData.permissions)) {
       userData.permissions = User.DEFAULT_PERMISSIONS[userData.role] || [];
     }
+
+    await attachTenantInfo(user, userData);
 
     res.json({ success: true, data: userData });
   } catch (error) {

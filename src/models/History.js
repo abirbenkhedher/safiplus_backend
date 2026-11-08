@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const historySchema = new mongoose.Schema({
   entityType: {
@@ -51,6 +52,9 @@ const historySchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+historySchema.plugin(tenantPlugin, { scope: 'boutique' });
 
 // Index pour les recherches
 historySchema.index({ entityId: 1, entityType: 1 });

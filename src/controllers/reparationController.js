@@ -193,6 +193,7 @@ async function trySendSMS(reparationId, statusIdOrDoc, userId) {
 
 function getFullPopulate(query) {
   return query
+    .populate('boutique', 'nom code')
     .populate('client', 'nom phone phone2 email code codeFidelite adresse zone')
     .populate('status', 'label color parDefault')
     .populate({
@@ -252,6 +253,7 @@ async function restaurerStockPourReparation(reparation, userId, motif) {
 
         const mouvement = await MouvementStock.create({
           stock: stock._id,
+          boutique: stock.boutique, // ✅ multi-tenant
           type: 'RESTAURATION_REPARATION',
           quantite: piece.quantite,
           quantiteAvant: stock.quantite - piece.quantite,
@@ -564,6 +566,7 @@ exports.getPublicByNumero = async (req, res) => {
       .populate('marque', 'nom')
       .populate('modele', 'nom')
       .populate('reparateur', 'firstName lastName')
+      .populate('boutique', 'nom telephone adresse')
       .lean();
 
     if (!reparation) {
@@ -586,6 +589,9 @@ exports.getPublicByNumero = async (req, res) => {
       success: true,
       data: {
         numero: reparation.numero,
+        boutique: reparation.boutique
+          ? { nom: reparation.boutique.nom, telephone: reparation.boutique.telephone, adresse: reparation.boutique.adresse }
+          : null,
         client: {
           nom: reparation.client?.nom || 'N/A',
           phone: reparation.client?.phone,
@@ -1230,7 +1236,7 @@ exports.changeStatus = async (req, res) => {
     const newStatusLabel = (statusExists.label || '').toUpperCase().trim();
 
     if (statusExists.isTerminal) {
-      if (req.user.role !== 'ADMIN') {
+      if (!['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
         return res.status(403).json({
           success: false,
           message: 'Seul un administrateur peut changer un statut terminal',

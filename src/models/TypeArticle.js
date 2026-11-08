@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const typeArticleSchema = new mongoose.Schema({
   nom: {
@@ -22,9 +23,12 @@ const typeArticleSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+typeArticleSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
 // ✅ Unicité insensible à la casse
 typeArticleSchema.index(
-  { nom: 1 },
+  { organisation: 1, nom: 1 },
   { unique: true, collation: { locale: 'fr', strength: 2 } }
 );
 typeArticleSchema.index({ ordre: 1 });

@@ -252,6 +252,7 @@ exports.create = async (req, res) => {
 
     await MouvementStock.create({
       stock: stock._id,
+      boutique: stock.boutique, // ✅ multi-tenant
       type: 'CREATION',
       quantite: stock.quantite,
       quantiteAvant: 0,
@@ -298,6 +299,7 @@ exports.update = async (req, res) => {
 
       await MouvementStock.create({
         stock: stock._id,
+        boutique: stock.boutique, // ✅ multi-tenant
         type: 'AJUSTEMENT',
         quantite: nouvelle - ancienneQuantite,
         quantiteAvant: ancienneQuantite,
@@ -353,6 +355,7 @@ exports.increment = async (req, res) => {
 
     await MouvementStock.create({
       stock: updated._id,
+      boutique: updated.boutique, // ✅ multi-tenant
       type: deltaNum > 0 ? 'AJOUT_MANUEL' : 'RETRAIT_MANUEL',
       quantite: deltaNum,
       quantiteAvant: updated.quantite - deltaNum,
@@ -401,6 +404,7 @@ exports.setQuantite = async (req, res) => {
 
     await MouvementStock.create({
       stock: stock._id,
+      boutique: stock.boutique, // ✅ multi-tenant
       type: 'AJUSTEMENT',
       quantite: qte - ancienne,
       quantiteAvant: ancienne,
@@ -454,6 +458,14 @@ exports.consommerPourReparation = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Stock introuvable' });
     }
 
+    // ✅ Multi-tenant : la pièce doit venir du stock de la boutique de la réparation
+    if (String(stockBefore.boutique) !== String(reparation.boutique)) {
+      return res.status(400).json({
+        success: false,
+        message: "Cette pièce appartient au stock d'une autre boutique",
+      });
+    }
+
     // ✅ Décrément atomique
     const updated = await Stock.findOneAndUpdate(
       { _id: stockId, quantite: { $gte: qte } },
@@ -468,6 +480,7 @@ exports.consommerPourReparation = async (req, res) => {
     // ✅ Mouvement d'audit
     const mouvement = await MouvementStock.create({
       stock: updated._id,
+      boutique: updated.boutique, // ✅ multi-tenant
       type: 'RETRAIT_REPARATION',
       quantite: -qte,
       quantiteAvant: updated.quantite + qte,
@@ -550,6 +563,7 @@ exports.annulerConsommation = async (req, res) => {
     // ✅ Créer un mouvement d'audit
     const mouvement = await MouvementStock.create({
       stock: stock._id,
+      boutique: stock.boutique, // ✅ multi-tenant
       type: 'ANNULATION_CONSOMMATION',
       quantite: piece.quantite,
       quantiteAvant: stock.quantite - piece.quantite,

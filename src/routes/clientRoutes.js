@@ -4,6 +4,7 @@ const multer = require('multer');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const clientController = require('../controllers/clientController');
+const { restoreTenant } = require('../config/tenantContext');
 
 // ============================================================
 // ✅ MULTER : upload en mémoire pour l'import Excel
@@ -27,6 +28,7 @@ router.post(
   requireAdmin,
   requirePermission('clients'),
   upload.single('file'),
+  restoreTenant, // ✅ multer casse le contexte asynchrone
   clientController.previewImportClients
 );
 
@@ -39,6 +41,7 @@ router.post(
   requireAdmin,
   requirePermission('clients'),
   upload.single('file'),
+  restoreTenant, // ✅ multer casse le contexte asynchrone
   clientController.confirmImportClients
 );
 

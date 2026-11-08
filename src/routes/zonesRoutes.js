@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const zoneController = require('../controllers/zoneController');
-const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 
 // ✅ Toutes les routes nécessitent l'authentification
 router.use(requireAuth);
@@ -20,7 +21,7 @@ router.get('/:id', zoneController.getOne);
 const canWrite = (req, res, next) => {
   const user = req.user;
   const ok =
-    user.role === 'ADMIN' ||
+    ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('zones') ||
     user.permissions?.includes('clients');
   if (!ok) {
@@ -38,6 +39,6 @@ router.put('/:id', canWrite, zoneController.update);
 // ============================================================
 // ✅ DELETE : ADMIN uniquement
 // ============================================================
-router.delete('/:id', requireAdmin, zoneController.delete);
+router.delete('/:id', requirePermission('zones'), zoneController.delete);
 
 module.exports = router;

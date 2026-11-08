@@ -23,6 +23,11 @@ const AVAILABLE_MODULES = [
   'modeles:read',
   'pannes',           // ✅ AJOUT
   'pannes:read',      // ✅ AJOUT
+  'zones',
+  'stock',
+  'stock:read',
+  'depenses',
+  'statistiques',
   'users',
   'history',
 ];
@@ -31,10 +36,12 @@ const AVAILABLE_MODULES = [
 // ✅ Permissions par défaut
 // ============================================================
 const DEFAULT_PERMISSIONS = {
+  SUPER_ADMIN: [],
   ADMIN: [
     'dashboard', 'clients', 'reparations', 'paiements',
     'familles', 'categories', 'objets', 'statuses',
     'marques', 'modeles', 'pannes',              // ✅ AJOUT
+    'zones', 'stock', 'depenses', 'statistiques',
     'users', 'history',
   ],
   COMMERCIAL: [
@@ -54,6 +61,7 @@ const DEFAULT_PERMISSIONS = {
   REPARATEUR: [
     'dashboard',
     'reparations',
+    'stock',
     'categories:read',
     'objets:read',
     'statuses:read',
@@ -112,9 +120,28 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['ADMIN', 'COMMERCIAL', 'REPARATEUR'],
+    enum: ['SUPER_ADMIN', 'ADMIN', 'COMMERCIAL', 'REPARATEUR'],
     default: 'COMMERCIAL',
   },
+  // ============================================================
+  // ✅ MULTI-TENANT
+  // ============================================================
+  organisation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organisation',
+    default: null,
+    index: true,
+  },
+  // Propriétaire : accès à TOUTES les boutiques de son organisation
+  isOwner: {
+    type: Boolean,
+    default: false,
+  },
+  // Boutiques affectées (ignoré si isOwner)
+  boutiques: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Boutique',
+  }],
   permissions: {
     type: [String],
     enum: AVAILABLE_MODULES,
@@ -146,6 +173,19 @@ userSchema.virtual('fullName').get(function () {
   return `${this.firstName} ${this.lastName}`;
 });
 
+// Un utilisateur (hors SUPER_ADMIN) doit appartenir à une organisation
+userSchema.pre('validate', function () {
+  if (this.role !== 'SUPER_ADMIN' && !this.organisation) {
+    this.invalidate('organisation', "L'organisation est obligatoire");
+  }
+  if (this.role === 'SUPER_ADMIN') {
+    this.organisation = null;
+    this.isOwner = false;
+    this.boutiques = [];
+  }
+  if (this.isOwner && this.role !== 'ADMIN') this.isOwner = false;
+});
+
 userSchema.pre('save', async function () {
   if (this.isModified('password')) {
     const salt = await bcrypt.genSalt(10);
@@ -167,7 +207,7 @@ userSchema.methods.hasAnyRole = function (roles) {
 
 // ✅ Vérifier une permission
 userSchema.methods.hasPermission = function (module) {
-  if (this.role === 'ADMIN') return true;
+  if (this.role === 'ADMIN' || this.role === 'SUPER_ADMIN') return true;
   if (this.permissions.includes(module)) return true;
   return false;
 };

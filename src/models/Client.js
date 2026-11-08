@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
+const Counter = require('./Counter');
 
 const clientSchema = new mongoose.Schema({
   code: {
     type: String,
-    unique: true,
     trim: true,
     sparse: true,
     default: null
@@ -65,6 +66,10 @@ const clientSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+// ✅ Clients propres à chaque boutique
+clientSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+
 // ============================================================
 // ✅ Middleware : génération UNIQUEMENT du code client (C001, C002...)
 // ❌ PLUS AUCUNE génération de code fidélité
@@ -73,8 +78,12 @@ clientSchema.pre('validate', async function() {
   // Génération du code client (C001, C002, ...)
   if (this.isNew && !this.code) {
     try {
-      const count = await this.constructor.countDocuments();
-      const padded = String(count + 1).padStart(3, '0');
+      // ✅ Compteur par boutique (C001, C002... propres à chaque boutique)
+      const boutiqueId = this.boutique;
+      const seq = await Counter.next(`client:b:${boutiqueId}`, () =>
+        this.constructor.countDocuments({ boutique: boutiqueId })
+      );
+      const padded = String(seq).padStart(3, '0');
       this.code = `C${padded}`;
       console.log(`📝 Code client généré: ${this.code}`);
     } catch (error) {
@@ -92,7 +101,15 @@ clientSchema.pre('validate', async function() {
 // ============================================================
 // ✅ Index
 // ============================================================
-clientSchema.index({ codeFidelite: 1 }, { unique: true, sparse: true });
+// ✅ Unicité par boutique
+clientSchema.index(
+  { boutique: 1, code: 1 },
+  { unique: true, partialFilterExpression: { code: { $type: 'string' } } }
+);
+clientSchema.index(
+  { boutique: 1, codeFidelite: 1 },
+  { unique: true, partialFilterExpression: { codeFidelite: { $type: 'string' } } }
+);
 
 clientSchema.index({
   nom: 'text',

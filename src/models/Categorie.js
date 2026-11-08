@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const categorieSchema = new mongoose.Schema({
   nom: {
@@ -31,7 +32,10 @@ const categorieSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+categorieSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
 // Index composé unique pour éviter les doublons par famille
-categorieSchema.index({ famille: 1, nom: 1 }, { unique: true });
+categorieSchema.index({ organisation: 1, famille: 1, nom: 1 }, { unique: true });
 
 module.exports = mongoose.model('Categorie', categorieSchema);

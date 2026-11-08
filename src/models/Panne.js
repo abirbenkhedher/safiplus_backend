@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const panneSchema = new mongoose.Schema({
   nom: {
@@ -24,13 +25,16 @@ const panneSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+panneSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
 // ============================================================
 // ✅ Index composé unique (nom + catégorie) avec collation
 // Insensible à la casse et aux accents pour éviter les doublons
 // type "Écran cassé" / "ecran casse"
 // ============================================================
 panneSchema.index(
-  { nom: 1, categorie: 1 },
+  { organisation: 1, nom: 1, categorie: 1 },
   {
     unique: true,
     collation: { locale: 'fr', strength: 2 },

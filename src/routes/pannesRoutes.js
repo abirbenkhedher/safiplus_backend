@@ -12,7 +12,7 @@ router.use(requireAuth);
 router.get('/', (req, res, next) => {
   const user = req.user;
   const hasAccess =
-    user.role === 'ADMIN' ||
+    ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('pannes') ||
     user.permissions?.includes('pannes:read');
 
@@ -28,7 +28,7 @@ router.get('/', (req, res, next) => {
 router.get('/:id', (req, res, next) => {
   const user = req.user;
   const hasAccess =
-    user.role === 'ADMIN' ||
+    ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('pannes') ||
     user.permissions?.includes('pannes:read');
 
@@ -47,7 +47,7 @@ router.get('/:id', (req, res, next) => {
 router.post('/', (req, res, next) => {
   const user = req.user;
   const hasAccess =
-    user.role === 'ADMIN' ||
+    ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('pannes');
 
   if (!hasAccess) {
@@ -62,7 +62,7 @@ router.post('/', (req, res, next) => {
 router.put('/:id', (req, res, next) => {
   const user = req.user;
   const hasAccess =
-    user.role === 'ADMIN' ||
+    ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('pannes');
 
   if (!hasAccess) {

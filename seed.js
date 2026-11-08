@@ -7,6 +7,7 @@ const Marque = require('./src/models/Marque');
 const Modele = require('./src/models/Modele');
 const logger = require('./src/config/logger');
 const { objets } = require('./seed/data');
+const { runInOrganisation } = require('./scripts/tenantScript');
 
 // ============================================================
 // ✅ FONCTION : Seed Objets + Marques + Modèles
@@ -97,7 +98,9 @@ const seedObjetsMarquesModeles = async () => {
 // ============================================================
 // ✅ FONCTION : Seed Utilisateurs + Statuts (votre code actuel)
 // ============================================================
-const seedUsersAndStatuses = async () => {
+const seedUsersAndStatuses = async ({ organisation, boutiques }) => {
+  // ✅ Multi-tenant : les utilisateurs sont rattachés à l'organisation
+  const tenantFields = { organisation: organisation._id, boutiques };
   // Créer les statuts par défaut
   const defaultStatuses = [
     { label: 'En attente', parDefault: true, order: 0, color: '#ffc107', isTerminal: false },
@@ -129,7 +132,9 @@ const seedUsersAndStatuses = async () => {
     firstName: process.env.ADMIN_FIRST_NAME || 'Admin',
     lastName: process.env.ADMIN_LAST_NAME || 'System',
     role: 'ADMIN',
-    isActive: true
+    isOwner: true,
+    isActive: true,
+    ...tenantFields
   };
 
   const existingAdmin = await User.findOne({
@@ -152,7 +157,8 @@ const seedUsersAndStatuses = async () => {
     firstName: 'Commercial',
     lastName: 'Test',
     role: 'COMMERCIAL',
-    isActive: true
+    isActive: true,
+    ...tenantFields
   };
 
   const existingCommercial = await User.findOne({
@@ -175,7 +181,8 @@ const seedUsersAndStatuses = async () => {
     firstName: 'Reparateur',
     lastName: 'Test',
     role: 'REPARATEUR',
-    isActive: true
+    isActive: true,
+    ...tenantFields
   };
 
   const existingReparateur = await User.findOne({
@@ -194,7 +201,7 @@ const seedUsersAndStatuses = async () => {
 // ============================================================
 // ✅ FONCTION PRINCIPALE
 // ============================================================
-const seedDatabase = async () => {
+const seedDatabase = async (tenant) => {
   try {
     // Connexion
     await mongoose.connect(process.env.MONGODB_URI);
@@ -205,10 +212,10 @@ const seedDatabase = async () => {
     await seedObjetsMarquesModeles();
 
     // 2. Seed Users / Statuses
-    await seedUsersAndStatuses();
+    await seedUsersAndStatuses(tenant);
 
     // Résumé
-    const userCount = await User.countDocuments();
+    const userCount = await User.countDocuments({ organisation: tenant.organisation._id });
     const statusCount = await Status.countDocuments();
     const objetCount = await Objet.countDocuments();
     const marqueCount = await Marque.countDocuments();
@@ -241,4 +248,7 @@ process.on('unhandledRejection', (error) => {
   process.exit(1);
 });
 
-seedDatabase();
+runInOrganisation(seedDatabase).catch((error) => {
+  logger.error('❌ Erreur lors du seed:', error);
+  process.exit(1);
+});

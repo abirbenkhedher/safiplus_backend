@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const zoneSchema = new mongoose.Schema(
   {
@@ -20,9 +21,12 @@ const zoneSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+zoneSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
 // ✅ Unique insensible à la casse/accents (comme Panne)
 zoneSchema.index(
-  { nom: 1 },
+  { organisation: 1, nom: 1 },
   { unique: true, collation: { locale: 'fr', strength: 2 } }
 );
 

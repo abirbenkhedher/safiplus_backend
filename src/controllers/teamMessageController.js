@@ -138,7 +138,7 @@ exports.delete = async (req, res) => {
     }
 
     // Seul l'auteur (ou admin) peut supprimer
-    if (msg.author.toString() !== req.user.id && req.user.role !== 'ADMIN') {
+    if (msg.author.toString() !== req.user.id && !['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: 'Non autorisé',

@@ -89,4 +89,7 @@ const seedPannes = async () => {
   }
 };
 
-seedPannes();
+require('./tenantScript').runInOrganisation(seedPannes).catch((error) => {
+  logger.error('❌ Erreur lors du seed des pannes:', error);
+  process.exit(1);
+});

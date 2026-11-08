@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const stockSchema = new mongoose.Schema({
   categorie: {
@@ -49,9 +50,12 @@ const stockSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+stockSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+
 // ⚠️ Unicité par combinaison complète
 stockSchema.index(
-  { categorie: 1, objet: 1, typeArticle: 1, marque: 1, modele: 1 },
+  { boutique: 1, categorie: 1, objet: 1, typeArticle: 1, marque: 1, modele: 1 },
   { unique: true }
 );
 stockSchema.index({ quantite: 1 });

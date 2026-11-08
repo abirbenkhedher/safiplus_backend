@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const statusSchema = new mongoose.Schema({
   label: {
     type: String,
     required: [true, 'Le libellé du statut est obligatoire'],
-    unique: true,
     trim: true
   },
   parDefault: {
@@ -32,11 +32,14 @@ const statusSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+statusSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
 // Middleware pour gérer le statut par défaut - VERSION SANS next
 statusSchema.pre('save', async function() {
   if (this.parDefault) {
     await this.constructor.updateMany(
-      { _id: { $ne: this._id }, parDefault: true },
+      { _id: { $ne: this._id }, parDefault: true, organisation: this.organisation },
       { parDefault: false }
     );
   }
@@ -58,5 +61,8 @@ statusSchema.statics.getDefault = async function() {
   }
   return status;
 };
+
+// ✅ Libellé unique par organisation
+statusSchema.index({ organisation: 1, label: 1 }, { unique: true });
 
 module.exports = mongoose.model('Status', statusSchema);

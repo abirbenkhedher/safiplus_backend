@@ -2,9 +2,10 @@ const express = require("express");
 const router = express.Router();
 const statistiquesController = require("../controllers/statistiquesController");
 
-// Middleware d'authentification (adapte le nom selon ton projet : auth, verifyToken, etc.)
-// const { protect, admin } = require("../middleware/auth.middleware");
-// router.use(protect); // Décommente pour sécuriser
+// ✅ Authentification obligatoire (fournit aussi le contexte multi-tenant)
+const { requireAuth } = require("../middleware/auth");
+const { requirePermission } = require("../middleware/permissions");
+router.use(requireAuth, requirePermission("statistiques"));
 
 // Route 1 : Vue d'ensemble
 router.get("/overview", statistiquesController.getOverview);

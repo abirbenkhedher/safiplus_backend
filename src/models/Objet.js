@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const objetSchema = new mongoose.Schema({
   nom: {
     type: String,
     required: [true, 'Le nom de l\'objet est obligatoire'],
-    unique: true,
     trim: true,
     minlength: [2, 'Le nom doit contenir au moins 2 caractères']
   },
@@ -16,5 +16,11 @@ const objetSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+objetSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
+// ✅ Nom unique par organisation
+objetSchema.index({ organisation: 1, nom: 1 }, { unique: true });
 
 module.exports = mongoose.model('Objet', objetSchema);

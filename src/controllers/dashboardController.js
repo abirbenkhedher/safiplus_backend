@@ -7,7 +7,7 @@ const logger = require('../config/logger');
 // ============================================================
 // ✅ Helper : l'utilisateur a-t-il accès aux données financières ?
 // ============================================================
-const canViewFinancials = (user) => user?.role === 'ADMIN';
+const canViewFinancials = (user) => ['ADMIN', 'SUPER_ADMIN'].includes(user?.role);
 
 // ============================================================
 // GET - Statistiques du dashboard

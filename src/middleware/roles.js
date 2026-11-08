@@ -10,7 +10,7 @@ const requireRole = (roles) => {
 
     const userRole = req.user.role;
     
-    if (!roles.includes(userRole)) {
+    if (userRole !== 'SUPER_ADMIN' && !roles.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: `Accès refusé. Rôle requis: ${roles.join(' ou ')}`
@@ -39,7 +39,7 @@ const requireAdminOrSelf = (req, res, next) => {
     });
   }
 
-  if (req.user.role === 'ADMIN' || req.user.id === req.params.id) {
+  if (['ADMIN', 'SUPER_ADMIN'].includes(req.user.role) || req.user.id === req.params.id) {
     return next();
   }
 

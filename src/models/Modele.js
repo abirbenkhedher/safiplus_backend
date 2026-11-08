@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const modeleSchema = new mongoose.Schema({
   nom: {
@@ -20,7 +21,10 @@ const modeleSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+modeleSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
 // Index composé : un modèle est unique par marque
-modeleSchema.index({ nom: 1, marque: 1 }, { unique: true });
+modeleSchema.index({ organisation: 1, nom: 1, marque: 1 }, { unique: true });
 
 module.exports = mongoose.model('Modele', modeleSchema);

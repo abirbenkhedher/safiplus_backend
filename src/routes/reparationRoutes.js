@@ -3,6 +3,7 @@ const router = express.Router();
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const reparationController = require('../controllers/reparationController');
+const { systemContext } = require('../config/tenantContext');
 
 // ============================================================
 // ✅ SUPPRESSION MULTIPLE — ADMIN uniquement
@@ -76,7 +77,8 @@ router.delete(
 // ============================================================
 // ✅ ROUTE PUBLIQUE (sans auth) — Suivi client via QR Code
 // ============================================================
-router.get('/public/:numero', reparationController.getPublicByNumero);
+// ✅ Route publique : pas d'utilisateur → contexte "system" (numéro unique global)
+router.get('/public/:numero', systemContext, reparationController.getPublicByNumero);
 
 // ============================================================
 // Impression

@@ -1,6 +1,106 @@
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const User = require('../models/User');
+const Organisation = require('../models/Organisation');
+const Boutique = require('../models/Boutique');
 const logger = require('../config/logger');
+const { runWithTenant } = require('../config/tenantContext');
+
+// ============================================================
+// ✅ MULTI-TENANT : calcul du contexte (organisation + boutiques)
+// ------------------------------------------------------------
+// - SUPER_ADMIN : contexte "system" (gestion de la plateforme)
+// - Propriétaire (isOwner) : toutes les boutiques actives de son organisation
+// - Autres : uniquement les boutiques qui lui sont affectées
+// - En-tête "X-Boutique-Id" : boutique active (ou "all" = toutes)
+// ============================================================
+const buildTenantContext = async (user, req) => {
+  if (user.role === 'SUPER_ADMIN') {
+    // Sans boutique choisie → backoffice (contexte "system")
+    const header = String(req.headers['x-boutique-id'] || '').trim();
+    if (!header || header === 'all') {
+      return { ok: true, ctx: { system: true, superAdmin: true } };
+    }
+    // Boutique choisie → le super admin entre dans la boutique comme son propriétaire
+    const shop = mongoose.isValidObjectId(header)
+      ? await Boutique.findById(header).select('organisation').lean()
+      : null;
+    if (!shop) {
+      return {
+        ok: false,
+        status: 403,
+        message: 'Boutique introuvable.',
+        code: 'BOUTIQUE_FORBIDDEN',
+      };
+    }
+    const siblings = await Boutique.find({ organisation: shop.organisation }).select('_id').lean();
+    return {
+      ok: true,
+      ctx: {
+        organisation: shop.organisation,
+        boutiques: [shop._id],
+        boutique: shop._id,
+        allowed: siblings.map((b) => b._id),
+        isOwner: true,
+        superAdmin: true,
+      },
+    };
+  }
+
+  if (!user.organisation) {
+    return { ok: false, status: 403, message: 'Aucune organisation associée à ce compte.' };
+  }
+
+  const org = await Organisation.findById(user.organisation).select('isActive').lean();
+  if (!org || !org.isActive) {
+    return { ok: false, status: 403, message: 'Organisation désactivée. Contactez le support.' };
+  }
+
+  const query = { organisation: user.organisation, isActive: true };
+  if (!user.isOwner) query._id = { $in: user.boutiques || [] };
+
+  const boutiques = await Boutique.find(query).select('_id').lean();
+  const allowed = boutiques.map((b) => b._id);
+
+  if (allowed.length === 0) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Aucune boutique active n'est affectée à votre compte.",
+      code: 'NO_BOUTIQUE',
+    };
+  }
+
+  const header = String(req.headers['x-boutique-id'] || '').trim();
+  let active = null;
+  let visible = allowed;
+
+  if (header && header !== 'all') {
+    active = allowed.find((b) => String(b) === header);
+    if (!active) {
+      return {
+        ok: false,
+        status: 403,
+        message: "Vous n'avez pas accès à cette boutique.",
+        code: 'BOUTIQUE_FORBIDDEN',
+      };
+    }
+    visible = [active];
+  } else if (allowed.length === 1) {
+    active = allowed[0];
+  }
+
+  return {
+    ok: true,
+    ctx: {
+      organisation: new mongoose.Types.ObjectId(String(user.organisation)),
+      boutiques: visible,
+      boutique: active,
+      allowed,
+      isOwner: !!user.isOwner,
+    },
+  };
+};
 
 // ============================================================
 // ✅ CONFIGURATION INACTIVITÉ
@@ -90,7 +190,21 @@ const requireAuth = async (req, res, next) => {
     }
 
     req.user = user;
-    next();
+
+    // ✅ Contexte multi-tenant
+    const tenant = await buildTenantContext(user, req);
+    if (!tenant.ok) {
+      return res.status(tenant.status).json({
+        success: false,
+        message: tenant.message,
+        code: tenant.code,
+      });
+    }
+    req.tenant = tenant.ctx;
+
+    // Toute la suite de la requête s'exécute dans ce contexte :
+    // les modèles filtrent automatiquement par organisation / boutique.
+    return runWithTenant(req.tenant, () => next());
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
@@ -170,7 +284,8 @@ const requireRole = (roles) => {
       });
     }
 
-    if (!roles.includes(req.user.role)) {
+    // ✅ Le SUPER_ADMIN passe tous les contrôles de rôle
+    if (req.user.role !== 'SUPER_ADMIN' && !roles.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: `Accès refusé. Rôle requis: ${roles.join(' ou ')}`,
@@ -182,6 +297,21 @@ const requireRole = (roles) => {
 };
 
 const requireAdmin = requireRole(['ADMIN']);
+const requireSuperAdmin = requireRole(['SUPER_ADMIN']);
+
+// Propriétaire de l'organisation (ADMIN + isOwner) ou SUPER_ADMIN
+const requireOwner = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, message: 'Utilisateur non authentifié.' });
+  }
+  if (req.user.role === 'SUPER_ADMIN' || (req.user.role === 'ADMIN' && req.user.isOwner)) {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: "Accès réservé au propriétaire de l'organisation.",
+  });
+};
 const requireAdminOrCommercial = requireRole(['ADMIN', 'COMMERCIAL']);
 const requireAdminOrReparateur = requireRole(['ADMIN', 'REPARATEUR']);
 
@@ -193,7 +323,7 @@ const requireAdminOrSelf = (req, res, next) => {
     });
   }
 
-  if (req.user.role === 'ADMIN' || req.user.id === req.params.id) {
+  if (['ADMIN', 'SUPER_ADMIN'].includes(req.user.role) || req.user.id === req.params.id) {
     return next();
   }
 
@@ -213,6 +343,9 @@ module.exports = {
   auth: requireAuth,
   requireRole,
   requireAdmin,
+  requireSuperAdmin,
+  requireOwner,
+  buildTenantContext,
   requireAdminOrCommercial,
   requireAdminOrReparateur,
   requireAdminOrSelf,

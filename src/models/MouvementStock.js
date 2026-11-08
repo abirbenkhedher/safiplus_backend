@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const mouvementStockSchema = new mongoose.Schema({
   stock: {
@@ -46,6 +47,9 @@ type: {
     required: true,
   },
 }, { timestamps: true });
+
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+mouvementStockSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
 
 mouvementStockSchema.index({ createdAt: -1 });
 mouvementStockSchema.index({ stock: 1, createdAt: -1 });

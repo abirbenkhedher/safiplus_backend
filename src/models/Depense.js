@@ -1,11 +1,11 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
+const Counter = require('./Counter');
 
 const depenseSchema = new mongoose.Schema({
   numero: {
     type: String,
-    unique: true,
     trim: true,
-    sparse: true,
   },
   type: {
     type: String,
@@ -54,16 +54,26 @@ const depenseSchema = new mongoose.Schema({
   isDeleted: { type: Boolean, default: false, index: true },
 }, { timestamps: true });
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+depenseSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+
 // Index
 depenseSchema.index({ type: 1, dateDepense: -1 });
-depenseSchema.index({ numero: 1 }, { unique: true });
+// ✅ Numéro unique par boutique
+depenseSchema.index(
+  { boutique: 1, numero: 1 },
+  { unique: true, partialFilterExpression: { numero: { $type: 'string' } } }
+);
 
 // Génération numéro
 depenseSchema.pre('validate', async function () {
   if (this.isNew && !this.numero) {
     const year = new Date().getFullYear();
-    const count = await this.constructor.countDocuments();
-    const padded = String(count + 1).padStart(4, '0');
+    const boutiqueId = this.boutique;
+    const seq = await Counter.next(`depense:${boutiqueId}:${year}`, () =>
+      this.constructor.countDocuments({ boutique: boutiqueId, numero: new RegExp(`^DEP-${year}-`) })
+    );
+    const padded = String(seq).padStart(4, '0');
     this.numero = `DEP-${year}-${padded}`;
   }
 });

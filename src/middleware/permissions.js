@@ -13,7 +13,7 @@ const requirePermission = (permission) => {
       });
     }
 
-    if (req.user.role === 'ADMIN') {
+    if (['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
       return next();
     }
 
@@ -44,7 +44,7 @@ const requirePermissionOrRead = (permission) => {
       });
     }
 
-    if (req.user.role === 'ADMIN') {
+    if (['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
       return next();
     }
 
@@ -76,7 +76,7 @@ const requireAnyPermission = (permissions) => {
       });
     }
 
-    if (req.user.role === 'ADMIN') {
+    if (['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
       return next();
     }
 

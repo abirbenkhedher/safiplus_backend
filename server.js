@@ -26,6 +26,8 @@ const zonesRoutes = require('./src/routes/zonesRoutes');
 const depensesRoutes = require('./src/routes/depensesRoutes');
 const stockRoutes = require('./src/routes/stockRoutes');
 const typeArticleRoutes = require('./src/routes/typeArticlesRoutes');
+const organisationRoutes = require('./src/routes/organisationRoutes');
+const boutiqueRoutes = require('./src/routes/boutiqueRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -37,7 +39,8 @@ app.use(cors({
     'http://localhost:5173',
     process.env.FRONTEND_URL
   ].filter(Boolean),
-  credentials: true
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Boutique-Id']
 }));
 
 // ✅ CORRECTION : Augmentation de la limite pour les exports volumineux
@@ -71,6 +74,8 @@ app.use('/api/zones', zonesRoutes);
 app.use('/api/depenses', depensesRoutes);
 app.use('/api/stock', stockRoutes);
 app.use('/api/typearticles',typeArticleRoutes);
+app.use('/api/organisations', organisationRoutes);
+app.use('/api/boutiques', boutiqueRoutes);
 
 // Error handler
 app.use(errorHandler);

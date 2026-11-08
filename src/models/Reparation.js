@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
+const Counter = require('./Counter');
 
 const reparationSchema = new mongoose.Schema({
   numero: {
@@ -368,6 +370,9 @@ function computePrixTotal(doc) {
   return (Number(doc.prix) || 0) + imprevusAcceptes;
 }
 
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+reparationSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+
 // ============================================================
 // VIRTUALS
 // ============================================================
@@ -399,10 +404,15 @@ reparationSchema.virtual('totalPiecesConsommees').get(function () {
 reparationSchema.pre('validate', async function () {
   if (this.isNew && !this.numero) {
     try {
+      // ✅ Numéro préfixé par le code boutique : TUN1-R20260001
+      // (compteur propre à chaque boutique, numéro unique au niveau global)
       const year = new Date().getFullYear();
-      const count = await this.constructor.countDocuments();
-      const padded = String(count + 1).padStart(4, '0');
-      this.numero = `R${year}${padded}`;
+      const Boutique = mongoose.model('Boutique');
+      const boutique = await Boutique.findById(this.boutique).select('code').lean();
+      const prefix = boutique?.code ? `${boutique.code}-` : '';
+      const seq = await Counter.next(`reparation:${this.boutique}:${year}`, () => 0);
+      const padded = String(seq).padStart(4, '0');
+      this.numero = `${prefix}R${year}${padded}`;
     } catch (error) {
       console.error('❌ Erreur génération numéro:', error);
       const year = new Date().getFullYear();
@@ -446,9 +456,10 @@ reparationSchema.pre('validate', function () {
 // ============================================================
 
 // ✅ Index unique sur numéro
-reparationSchema.index({ numero: 1 }, { unique: true });
+// (index unique sur numero déclaré directement sur le champ : unique + sparse)
 
 // ✅ Index composés pour pagination + filtres (les plus utilisés)
+reparationSchema.index({ boutique: 1, isDeleted: 1, createdAt: -1 });
 reparationSchema.index({ isDeleted: 1, createdAt: -1 });
 reparationSchema.index({ isDeleted: 1, status: 1 });
 reparationSchema.index({ isDeleted: 1, categorie: 1 });

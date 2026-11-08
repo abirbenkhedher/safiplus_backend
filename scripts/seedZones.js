@@ -77,7 +77,7 @@ const seedZones = async ({ force = false } = {}) => {
 // ✅ Exécution en CLI
 if (require.main === module) {
   const force = process.argv.includes('--force');
-  seedZones({ force })
+  require('./tenantScript').runInOrganisation(() => seedZones({ force }))
     .then(() => mongoose.disconnect())
     .then(() => process.exit(0))
     .catch((err) => {

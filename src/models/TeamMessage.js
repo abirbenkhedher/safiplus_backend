@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const tenantPlugin = require('./plugins/tenantPlugin');
 
 const teamMessageSchema = new mongoose.Schema({
   // Auteur du message
@@ -37,6 +38,9 @@ const teamMessageSchema = new mongoose.Schema({
 }, {
   timestamps: true,
 });
+
+// ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
+teamMessageSchema.plugin(tenantPlugin, { scope: 'boutique' });
 
 teamMessageSchema.index({ createdAt: -1 });
 

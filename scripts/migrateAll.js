@@ -124,4 +124,7 @@ const migrate = async () => {
   }
 };
 
-migrate();
+require('./tenantScript').runInOrganisation(migrate).catch((error) => {
+  logger.error('❌ Erreur lors de la migration:', error);
+  process.exit(1);
+});

@@ -8,6 +8,8 @@
     "dev": "nodemon server.js",
     "seed": "node seed.js",
     "migrate:all": "node scripts/migrateAll.js",
+    "migrate:tenant": "node scripts/migrateMultiTenant.js",
+    "superadmin": "node scripts/superAdmin.js",
     "seed:pannes": "node scripts/seedPannes.js"
   },
   "keywords": [],
