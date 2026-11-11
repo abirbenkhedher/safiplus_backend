@@ -42,6 +42,7 @@ const errorHandler = (err, req, res, next) => {
   res.status(statusCode).json({
     success: false,
     message: message,
+    code: typeof err.code === 'string' ? err.code : undefined, // ✅ code métier (ex: PERIODE_CLOTUREE)
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 };

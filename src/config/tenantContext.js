@@ -33,12 +33,26 @@ const restoreTenant = (req, res, next) => {
 };
 
 class TenantError extends Error {
-  constructor(message, statusCode = 400) {
+  constructor(message, statusCode = 400, code = undefined) {
     super(message);
     this.name = 'TenantError';
     this.statusCode = statusCode;
+    if (code) this.code = code;
   }
 }
+
+/**
+ * Vue globale ("toutes les boutiques") : une création a besoin d'une boutique.
+ * Le frontend reconnaît ce code (ou ce message) et demande la boutique cible.
+ */
+const BOUTIQUE_REQUIRED = 'BOUTIQUE_REQUIRED';
+/** Vue globale (admin, toutes les boutiques) = consultation seulement. */
+const GLOBAL_READONLY = 'GLOBAL_READONLY';
+const GLOBAL_READONLY_MESSAGE =
+  'Vue globale : consultation uniquement. Choisissez une boutique (en haut de l\'écran) pour ajouter ou modifier.';
+
+const BOUTIQUE_REQUIRED_MESSAGE =
+  "Veuillez sélectionner une boutique (en haut de l'écran) avant de créer cet élément.";
 
 module.exports = {
   storage,
@@ -48,4 +62,8 @@ module.exports = {
   systemContext,
   restoreTenant,
   TenantError,
+  BOUTIQUE_REQUIRED,
+  BOUTIQUE_REQUIRED_MESSAGE,
+  GLOBAL_READONLY,
+  GLOBAL_READONLY_MESSAGE,
 };

@@ -7,6 +7,17 @@ const Marque = require('../models/Marque');
 const Modele = require('../models/Modele');
 const TypeArticle = require('../models/TypeArticle');
 const logger = require('../config/logger');
+const mongoose = require('mongoose');
+const LotStock = require('../models/LotStock');
+const DeclarationJournaliere = require('../models/DeclarationJournaliere');
+const valorisation = require('../services/valorisationService');
+const commissionService = require('../services/commissionService');
+const { withTransaction, so } = require('../services/transaction');
+const { getParametres, assertPeriodeOuverte } = require('../services/atelierService');
+const { getTenant, runWithTenant } = require('../config/tenantContext');
+const { logAction } = require('../services/historyService');
+const { AppError } = require('../utils/appError');
+const money = require('../utils/money');
 
 // ============================================================
 // ✅ HELPER : Parser une valeur CSV en tableau
@@ -207,6 +218,7 @@ exports.create = async (req, res) => {
       categorie, objet, typeArticle,
       marque, modele,
       quantite, seuilAlerte, prixIndicatif, observation,
+      code, unite, coutManuel, commissionActive, coutUnitaire,
     } = req.body;
 
     if (!categorie) {
@@ -247,8 +259,23 @@ exports.create = async (req, res) => {
       seuilAlerte: Number(seuilAlerte) || 2,
       prixIndicatif: Number(prixIndicatif) || 0,
       observation: observation || '',
+      // ✅ Fiche article
+      code: code ? String(code).trim().toUpperCase() : null,
+      unite: unite || 'pièce',
+      coutManuel: coutManuel !== undefined && coutManuel !== null && coutManuel !== '' ? Number(coutManuel) : null,
+      commissionActive: commissionActive !== false,
+      // Valorisation initiale (si un coût unitaire est fourni)
+      cmp: coutUnitaire !== undefined && coutUnitaire !== null && coutUnitaire !== '' ? money.round3(coutUnitaire) : null,
+      cmpQuantiteBase: Number(quantite) || 0,
       createdBy: req.user.id,
     });
+
+    if (stock.cmp !== null && stock.quantite > 0) {
+      await LotStock.create({
+        stock: stock._id, boutique: stock.boutique, quantiteInitiale: stock.quantite,
+        quantiteRestante: stock.quantite, coutUnitaire: stock.cmp, source: 'CREATION',
+      });
+    }
 
     await MouvementStock.create({
       stock: stock._id,
@@ -286,6 +313,13 @@ exports.update = async (req, res) => {
     }
 
     const { quantite, seuilAlerte, prixIndicatif, observation, motif } = req.body;
+    // ✅ Champs fiche article
+    const { code, unite, coutManuel, commissionActive, isActive } = req.body;
+    if (code !== undefined) stock.code = code ? String(code).trim().toUpperCase() : null;
+    if (unite !== undefined) stock.unite = unite;
+    if (coutManuel !== undefined) stock.coutManuel = coutManuel === null || coutManuel === '' ? null : Number(coutManuel);
+    if (commissionActive !== undefined) stock.commissionActive = !!commissionActive;
+    if (isActive !== undefined) stock.isActive = !!isActive;
 
     const ancienneQuantite = stock.quantite;
 
@@ -426,179 +460,257 @@ exports.setQuantite = async (req, res) => {
 
 // ============================================================
 // POST - Consommer du stock pour une réparation
-// ✅ Enrichi : snapshot + statut "consomme" + lien mouvement
+// ✅ Valorisation figée (CMP / FIFO / manuel), mode de stock de la
+//    boutique respecté, période clôturée refusée, transaction.
 // ============================================================
 exports.consommerPourReparation = async (req, res) => {
-  try {
-    const { reparationId, stockId, quantite = 1 } = req.body;
+  const { reparationId, stockId, quantite = 1, coutManuel = null, reparateur = null } = req.body;
 
-    if (!reparationId || !stockId) {
-      return res.status(400).json({ success: false, message: 'reparationId et stockId requis' });
+  if (!reparationId || !stockId) {
+    return res.status(400).json({ success: false, message: 'reparationId et stockId requis' });
+  }
+  const qte = Number(quantite) || 1;
+  if (qte < 1 || !Number.isInteger(qte)) {
+    return res.status(400).json({ success: false, message: 'Quantité invalide' });
+  }
+  const userId = req.user._id;
+
+  const result = await withTransaction(async (session) => {
+    const reparation = await Reparation.findById(reparationId).session(session || null);
+    if (!reparation || reparation.isDeleted) throw new AppError('Réparation non trouvée', 404);
+
+    const params = await getParametres(reparation.boutique, session);
+    if (params.modeSaisieConsommation === 'journaliere') {
+      throw new AppError('Dans cette boutique, les consommations se saisissent par déclaration journalière.', 409);
     }
+    await assertPeriodeOuverte(reparation.boutique, new Date(), session);
 
-    const qte = Number(quantite) || 1;
-    if (qte < 1) {
-      return res.status(400).json({ success: false, message: 'Quantité invalide' });
-    }
-
-    const reparation = await Reparation.findById(reparationId);
-    if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
-    }
-
-    // ✅ Vérifier que la réparation n'est pas dans un statut "NON REPARE"
-    // (on ne peut pas consommer du stock sur une réparation déjà déclarée non réparable)
-    // Optionnel mais recommandé
-    // const statusDoc = await Status.findById(reparation.status);
-    // if (['NON REPARE', 'SAV NON REPARE', 'SORTIE NON REPARE'].includes((statusDoc?.label || '').toUpperCase())) { ... }
-
-    // ✅ Récupérer le stock pour le snapshot
-    const stockBefore = await populateStock(Stock.findById(stockId));
-    if (!stockBefore) {
-      return res.status(404).json({ success: false, message: 'Stock introuvable' });
-    }
-
+    const stockBefore = await populateStock(Stock.findById(stockId)).session(session || null);
+    if (!stockBefore) throw new AppError('Stock introuvable', 404);
     // ✅ Multi-tenant : la pièce doit venir du stock de la boutique de la réparation
     if (String(stockBefore.boutique) !== String(reparation.boutique)) {
-      return res.status(400).json({
-        success: false,
-        message: "Cette pièce appartient au stock d'une autre boutique",
-      });
+      throw new AppError("Cette pièce appartient au stock d'une autre boutique");
+    }
+    // ✅ Anti-doublon (§6.3) : pièce déjà déclarée pour ce dossier dans une déclaration journalière
+    const dejaDeclaree = await DeclarationJournaliere.findOne({
+      statut: { $in: ['validee', 'cloturee'] },
+      lignes: { $elemMatch: { reparation: reparation._id, stock: stockBefore._id, statut: 'active' } },
+    }).select('jour').session(session || null).lean();
+    if (dejaDeclaree) {
+      throw new AppError(`Pièce déjà déclarée pour ce dossier (déclaration du ${dejaDeclaree.jour}).`, 409, 'DOUBLON');
     }
 
-    // ✅ Décrément atomique
-    const updated = await Stock.findOneAndUpdate(
-      { _id: stockId, quantite: { $gte: qte } },
-      { $inc: { quantite: -qte } },
-      { new: true }
-    );
-
-    if (!updated) {
-      return res.status(400).json({ success: false, message: 'Stock insuffisant' });
-    }
-
-    // ✅ Mouvement d'audit
-    const mouvement = await MouvementStock.create({
-      stock: updated._id,
-      boutique: updated.boutique, // ✅ multi-tenant
-      type: 'RETRAIT_REPARATION',
-      quantite: -qte,
-      quantiteAvant: updated.quantite + qte,
-      quantiteApres: updated.quantite,
-      reparationId: reparation._id,
-      motif: `Consommation pour ${reparation.numero}`,
-      createdBy: req.user.id,
+    const out = await valorisation.sortie({
+      stockId, quantite: qte, params, session, userId, type: 'RETRAIT_REPARATION',
+      motif: `Consommation pour ${reparation.numero}`, reparationId: reparation._id,
+      sourceType: 'Reparation', sourceId: reparation._id, coutManuel,
     });
 
-    // ✅ Ajouter la pièce dans la réparation avec snapshot + statut
+    const tech = reparateur || reparation.reparateur || (req.user.role === 'REPARATEUR' ? userId : null);
     reparation.piecesStock = reparation.piecesStock || [];
     reparation.piecesStock.push({
-      stock: updated._id,
+      stock: stockBefore._id,
       snapshot: buildStockSnapshot(stockBefore),
       quantite: qte,
       statut: 'consomme',
       dateConsommation: new Date(),
-      consommePar: req.user.id,
-      mouvementStockId: mouvement._id,
+      consommePar: userId,
+      mouvementStockId: out.mouvementId,
+      coutUnitaire: out.coutUnitaire,
+      coutTotal: out.coutTotal,
+      sourceCout: out.sourceCout,
+      prixVenteUnitaire: out.prixVenteUnitaire,
+      stockPhysique: out.stockPhysique,
+      reparateur: tech,
     });
-    await reparation.save();
+    await reparation.save(so(session));
+    return { reparation, out };
+  });
 
-    logger.info(`Stock consommé: ${qte} × ${stockId} pour ${reparation.numero}`);
+  commissionService.syncReparationSafe(result.reparation._id, userId);
+  const updated = await Stock.findById(stockId);
+  logger.info(`Stock consommé: ${qte} × ${stockId} pour ${result.reparation.numero} (coût ${result.out.coutTotal})`);
 
-    res.json({
-      success: true,
-      message: 'Pièce consommée',
-      data: updated,
-      mouvementId: mouvement._id,
-    });
-  } catch (error) {
-    logger.error('Erreur consommerPourReparation:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
+  res.json({
+    success: true,
+    message: result.out.sourceCout === 'ESTIME' ? 'Pièce consommée (coût estimé)' : 'Pièce consommée',
+    data: updated,
+    mouvementId: result.out.mouvementId,
+    cout: {
+      unitaire: result.out.coutUnitaire, total: result.out.coutTotal,
+      source: result.out.sourceCout, estime: result.out.sourceCout === 'ESTIME',
+    },
+  });
 };
 
 // ============================================================
-// ✅ PATCH - Annuler une consommation (annulation manuelle)
-//     Remet la pièce au stock + log mouvement
+// ✅ PATCH - Annuler une consommation (contre-mouvement au coût d'origine)
 //     Route : PATCH /api/stock/pieces/:reparationId/:pieceId/annuler
 // ============================================================
 exports.annulerConsommation = async (req, res) => {
-  try {
-    const { reparationId, pieceId } = req.params;
-    const { motif } = req.body;
+  const { reparationId, pieceId } = req.params;
+  const { motif } = req.body;
+  const userId = req.user._id;
 
-    const reparation = await Reparation.findById(reparationId);
-    if (!reparation || reparation.isDeleted) {
-      return res.status(404).json({ success: false, message: 'Réparation non trouvée' });
-    }
+  const result = await withTransaction(async (session) => {
+    const reparation = await Reparation.findById(reparationId).session(session || null);
+    if (!reparation || reparation.isDeleted) throw new AppError('Réparation non trouvée', 404);
 
-    // Trouver la pièce
-    const piece = (reparation.piecesStock || []).find(
-      (p) => String(p._id) === String(pieceId)
-    );
-
-    if (!piece) {
-      return res.status(404).json({ success: false, message: 'Pièce introuvable' });
-    }
-
-    // ✅ Vérifier que la pièce est bien "consomme" (pas déjà restaurée/annulée)
+    const piece = (reparation.piecesStock || []).find((p) => String(p._id) === String(pieceId));
+    if (!piece) throw new AppError('Pièce introuvable', 404);
     if (piece.statut !== 'consomme') {
-      return res.status(400).json({
-        success: false,
-        message: `Cette pièce est déjà "${piece.statut}". Impossible de l'annuler.`,
-      });
+      throw new AppError(`Cette pièce est déjà "${piece.statut}". Impossible de l'annuler.`);
     }
+    await assertPeriodeOuverte(reparation.boutique, new Date(), session);
+    const params = await getParametres(reparation.boutique, session);
 
-    // ✅ Remettre au stock (incrément atomique)
-    const stock = await Stock.findByIdAndUpdate(
-      piece.stock,
-      { $inc: { quantite: piece.quantite } },
-      { new: true }
-    );
-
-    if (!stock) {
-      return res.status(404).json({ success: false, message: 'Ligne de stock introuvable' });
-    }
-
-    // ✅ Créer un mouvement d'audit
-    const mouvement = await MouvementStock.create({
-      stock: stock._id,
-      boutique: stock.boutique, // ✅ multi-tenant
-      type: 'ANNULATION_CONSOMMATION',
-      quantite: piece.quantite,
-      quantiteAvant: stock.quantite - piece.quantite,
-      quantiteApres: stock.quantite,
-      reparationId: reparation._id,
-      motif: motif || `Annulation de consommation (${reparation.numero})`,
-      createdBy: req.user.id,
+    const out = await valorisation.retour({
+      stockId: piece.stock, quantite: piece.quantite, coutUnitaire: piece.coutUnitaire,
+      stockPhysique: piece.stockPhysique !== false, params, session, userId,
+      type: 'ANNULATION_CONSOMMATION', motif: motif || `Annulation de consommation (${reparation.numero})`,
+      reparationId: reparation._id, sourceType: 'Reparation', sourceId: reparation._id,
     });
 
-    // ✅ Mettre à jour la pièce
     piece.statut = 'annule';
     piece.dateAnnulation = new Date();
-    piece.annulePar = req.user.id;
+    piece.annulePar = userId;
     piece.motifAnnulation = motif || '';
-    piece.mouvementAnnulationId = mouvement._id;
+    piece.mouvementAnnulationId = out.mouvementId;
+    await reparation.save(so(session));
+    return { reparation, piece, out };
+  });
 
-    await reparation.save();
+  commissionService.syncReparationSafe(result.reparation._id, userId);
+  logger.info(`↩️ Consommation annulée: ${result.piece.quantite} × ${result.piece.stock} pour ${result.reparation.numero} par ${req.user.username}`);
 
-    logger.info(
-      `↩️ Consommation annulée: ${piece.quantite} × ${stock._id} pour ${reparation.numero} par ${req.user.username}`
-    );
+  res.json({
+    success: true,
+    message: `Pièce annulée — ${result.piece.quantite} unité(s) remise(s) en stock`,
+    data: { piece: result.piece, nouveauStock: result.out.quantiteApres },
+    mouvementId: result.out.mouvementId,
+  });
+};
 
-    res.json({
-      success: true,
-      message: `Pièce annulée — ${piece.quantite} unité(s) remise(s) en stock`,
-      data: {
-        piece,
-        nouveauStock: stock.quantite,
-      },
-      mouvementId: mouvement._id,
-    });
-  } catch (error) {
-    logger.error('Erreur annulerConsommation:', error);
-    res.status(500).json({ success: false, message: error.message });
+// ============================================================
+// ✅ GET - Coût disponible d'un article (§16 GET /articles/{id}/cost)
+// ============================================================
+exports.getCout = async (req, res) => {
+  const stock = await Stock.findById(req.params.id).lean();
+  if (!stock) throw new AppError('Article introuvable', 404);
+  const params = await getParametres(stock.boutique);
+  const lots = await LotStock.find({ stock: stock._id, isAnnule: false, quantiteRestante: { $gt: 0 } })
+    .sort({ dateEntree: 1 }).select('quantiteRestante coutUnitaire dateEntree source').lean();
+  const ref = valorisation.coutReference(stock);
+  res.json({
+    success: true,
+    data: {
+      methode: params.methodeValorisation,
+      modeStock: params.modeStock,
+      cmp: stock.cmp,
+      dernierCoutAchat: stock.dernierCoutAchat,
+      coutManuel: stock.coutManuel,
+      prixIndicatif: stock.prixIndicatif,
+      prixVente: stock.prixIndicatif, // prix de vente / réparation (champ existant)
+      coutReference: ref.cout,
+      sourceCout: ref.source,
+      estime: ref.source === 'ESTIME',
+      lots,
+    },
+  });
+};
+
+// ============================================================
+// ✅ POST - Transfert entre boutiques (stock détaillé)
+// ============================================================
+exports.transfert = async (req, res) => {
+  const { stockId, boutiqueDestination, quantite, motif = '' } = req.body;
+  const qte = Number(quantite);
+  if (!stockId || !boutiqueDestination || !(qte >= 1) || !Number.isInteger(qte)) {
+    throw new AppError('stockId, boutiqueDestination et quantité entière requis');
   }
+  const ctx = getTenant();
+  const allowed = (ctx.allowed || []).map(String);
+  if (!allowed.includes(String(boutiqueDestination))) throw new AppError('Boutique de destination non autorisée', 403);
+  const userId = req.user._id;
+
+  const src = await Stock.findById(stockId).lean();
+  if (!src) throw new AppError('Article introuvable', 404);
+  if (String(src.boutique) === String(boutiqueDestination)) throw new AppError('Boutique de destination identique');
+
+  // Contexte élargi aux deux boutiques pour la durée de l'opération
+  const wide = { ...ctx, boutiques: [src.boutique, boutiqueDestination].map((b) => new mongoose.Types.ObjectId(String(b))) };
+  const result = await runWithTenant(wide, () => withTransaction(async (session) => {
+    const [pSrc, pDst] = await Promise.all([
+      getParametres(src.boutique, session), getParametres(boutiqueDestination, session),
+    ]);
+    if (pSrc.modeStock !== 'detaille') throw new AppError('Les transferts nécessitent le mode de stock détaillé (boutique source)', 409);
+    await assertPeriodeOuverte(src.boutique, new Date(), session);
+    await assertPeriodeOuverte(boutiqueDestination, new Date(), session);
+
+    const combo = { categorie: src.categorie, objet: src.objet || null, typeArticle: src.typeArticle, marque: src.marque || null, modele: src.modele || null };
+    let dst = await Stock.findOne({ ...combo, boutique: boutiqueDestination }).session(session || null);
+    if (!dst) {
+      [dst] = await Stock.create([{
+        ...combo, boutique: boutiqueDestination, quantite: 0, seuilAlerte: src.seuilAlerte,
+        prixIndicatif: src.prixIndicatif, unite: src.unite,
+        commissionActive: src.commissionActive, createdBy: userId,
+      }], so(session));
+    }
+
+    const out = await valorisation.sortie({
+      stockId: src._id, quantite: qte, params: pSrc, session, userId, type: 'TRANSFERT_SORTIE',
+      motif: `Transfert vers boutique ${boutiqueDestination} ${motif}`.trim(), sourceType: 'Transfert', sourceId: dst._id,
+    });
+    const inn = await valorisation.entree({
+      stockId: dst._id, quantite: qte, coutUnitaire: out.coutUnitaire, params: pDst, session, userId,
+      type: 'TRANSFERT_ENTREE', motif: `Transfert depuis boutique ${src.boutique} ${motif}`.trim(),
+      sourceType: 'Transfert', sourceId: src._id, lotSource: `TRANSFERT:${src._id}:${Date.now()}`,
+    });
+    return { out, inn, destination: dst._id };
+  }));
+
+  await logAction({ entityType: 'Stock', entityId: src._id, action: 'TRANSFER', userId, req, comment: `${qte} → ${boutiqueDestination}`, newValue: { coutUnitaire: result.out.coutUnitaire } });
+  res.json({ success: true, message: `Transfert de ${qte} unité(s) effectué`, data: { destinationStock: result.destination, coutUnitaire: result.out.coutUnitaire } });
+};
+
+// ============================================================
+// ✅ POST - Inventaire (stock détaillé) : écarts valorisés au coût courant
+// ============================================================
+exports.inventaire = async (req, res) => {
+  const { lignes, motif = 'Inventaire' } = req.body;
+  if (!Array.isArray(lignes) || lignes.length === 0) throw new AppError('Aucune ligne d\'inventaire');
+  const userId = req.user._id;
+
+  const ecarts = await withTransaction(async (session) => {
+    const out = [];
+    for (const l of lignes) {
+      const counted = Number(l.quantiteComptee);
+      if (!Number.isInteger(counted) || counted < 0) throw new AppError('Quantité comptée invalide');
+      const st = await Stock.findById(l.stockId).session(session || null);
+      if (!st) throw new AppError('Article introuvable', 404);
+      const params = await getParametres(st.boutique, session);
+      if (params.modeStock !== 'detaille') throw new AppError("L'inventaire nécessite le mode de stock détaillé", 409);
+      await assertPeriodeOuverte(st.boutique, new Date(), session);
+      const diff = counted - st.quantite;
+      if (diff === 0) { out.push({ stock: st._id, avant: st.quantite, apres: counted, ecart: 0, valeur: 0 }); continue; }
+      const ref = valorisation.coutReference(st);
+      if (diff > 0) {
+        await valorisation.entree({
+          stockId: st._id, quantite: diff, coutUnitaire: ref.cout, params, session, userId, type: 'INVENTAIRE',
+          motif, sourceType: 'Inventaire', lotSource: `INVENTAIRE:${Date.now()}`, majCmp: ref.source !== 'ESTIME',
+        });
+      } else {
+        await valorisation.sortie({ stockId: st._id, quantite: -diff, params, session, userId, type: 'INVENTAIRE', motif, sourceType: 'Inventaire' });
+      }
+      out.push({ stock: st._id, avant: st.quantite, apres: counted, ecart: diff, valeur: money.mul(ref.cout, diff), estime: ref.source === 'ESTIME' });
+    }
+    return out;
+  });
+
+  for (const e of ecarts.filter((x) => x.ecart !== 0)) {
+    await logAction({ entityType: 'Stock', entityId: e.stock, action: 'INVENTORY', userId, req, oldValue: e.avant, newValue: e.apres, comment: motif });
+  }
+  res.json({ success: true, message: 'Inventaire enregistré', data: { ecarts, valeurEcarts: money.sum(ecarts.map((e) => e.valeur)) } });
 };
 
 // ============================================================

@@ -30,6 +30,21 @@ const AVAILABLE_MODULES = [
   'statistiques',
   'users',
   'history',
+  // ✅ Module atelier (cahier des charges V1.1)
+  'parametres_atelier',     // paramètres de la boutique (mode stock, valorisation...)
+  'fournisseurs',
+  'achats',                 // factures d'achat (saisie + validation)
+  'declarations',           // déclarations journalières (saisie)
+  'consommations_valider',  // contrôle / validation des déclarations
+  'remuneration',           // journal des rémunérations (lecture)
+  'remuneration_autrui',    // consulter les rémunérations des autres réparateurs
+  'remuneration_regles',    // modifier taux, règles et contrats
+  'commissions_valider',
+  'paiements_reparateurs',  // avances / paiements
+  'operations_annuler',     // annuler une opération validée (contre-écriture)
+  'clotures',               // clôtures journalières / mensuelles
+  'clotures_rouvrir',
+  'rapports',
 ];
 
 // ============================================================
@@ -69,6 +84,7 @@ const DEFAULT_PERMISSIONS = {
     'modeles:read',        // ✅ AJOUT
     'pannes',              // ✅ AJOUT : accès complet
     'pannes:read',         // ✅ AJOUT : lecture
+    'declarations',        // ✅ ses propres déclarations journalières
   ],
 };
 

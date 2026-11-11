@@ -43,6 +43,18 @@ const stockSchema = new mongoose.Schema({
     min: 0,
   },
   observation: { type: String, trim: true, default: '' },
+
+  // ============================================================
+  // ✅ FICHE ARTICLE (cahier des charges §4.1) — champs additionnels
+  // ============================================================
+  code: { type: String, trim: true, uppercase: true, default: null },
+  unite: { type: String, trim: true, default: 'pièce' },
+  cmp: { type: Number, default: null, min: 0 },             // coût moyen pondéré courant
+  cmpQuantiteBase: { type: Number, default: 0, min: 0 },    // Q de référence en mode stock désactivé
+  dernierCoutAchat: { type: Number, default: null, min: 0 },
+  coutManuel: { type: Number, default: null, min: 0 },      // valorisation "coût manuel"
+  commissionActive: { type: Boolean, default: true },
+  isActive: { type: Boolean, default: true },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -57,6 +69,11 @@ stockSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
 stockSchema.index(
   { boutique: 1, categorie: 1, objet: 1, typeArticle: 1, marque: 1, modele: 1 },
   { unique: true }
+);
+// ✅ Code article unique dans la boutique (si renseigné)
+stockSchema.index(
+  { boutique: 1, code: 1 },
+  { unique: true, partialFilterExpression: { code: { $type: 'string' } } }
 );
 stockSchema.index({ quantite: 1 });
 stockSchema.index({ categorie: 1 });

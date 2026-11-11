@@ -345,6 +345,21 @@ const reparationSchema = new mongoose.Schema({
       ref: 'MouvementStock',
       default: null,
     },
+    // ✅ Valorisation figée au moment de la consommation (cahier des charges §7)
+    coutUnitaire: { type: Number, default: null },
+    coutTotal: { type: Number, default: null },
+    sourceCout: { type: String, enum: ['CMP', 'FIFO', 'MANUEL', 'ESTIME', null], default: null },
+    prixVenteUnitaire: { type: Number, default: null },
+    // false = mode stock désactivé (aucune sortie physique)
+    stockPhysique: { type: Boolean, default: true },
+    reparateur: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  }],
+
+  // ✅ Intervention partagée : répartition explicite des commissions (%)
+  // Vide = 100 % au réparateur (ou réparateur SAV pour un SAV)
+  repartitionCommission: [{
+    reparateur: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    pourcentage: { type: Number, required: true, min: 0, max: 100 },
   }],
 
   modifications: [{
@@ -418,6 +433,16 @@ reparationSchema.pre('validate', async function () {
       const year = new Date().getFullYear();
       this.numero = `R${year}${Date.now().toString().slice(-4)}`;
     }
+  }
+});
+
+// ✅ Répartition des commissions : total = 100 %
+reparationSchema.pre('validate', function () {
+  const rep = this.repartitionCommission || [];
+  if (rep.length === 0) return;
+  const total = rep.reduce((s, r) => s + (Number(r.pourcentage) || 0), 0);
+  if (Math.abs(total - 100) > 0.001) {
+    this.invalidate('repartitionCommission', 'La répartition des commissions doit totaliser 100 %');
   }
 });
 

@@ -4,7 +4,13 @@ const tenantPlugin = require('./plugins/tenantPlugin');
 const historySchema = new mongoose.Schema({
   entityType: {
     type: String,
-    enum: ['Reparation', 'Client', 'User', 'Status', 'Famille', 'Categorie', 'Objet'],
+    enum: [
+      'Reparation', 'Client', 'User', 'Status', 'Famille', 'Categorie', 'Objet',
+      // ✅ Module atelier (cahier des charges)
+      'Depense', 'Stock', 'Fournisseur', 'ParametresAtelier', 'DeclarationJournaliere',
+      'RegleCommission', 'ContratReparateur', 'Commission', 'EcritureRemuneration',
+      'PaiementReparateur', 'Cloture',
+    ],
     required: true
   },
   entityId: {
@@ -14,7 +20,10 @@ const historySchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    enum: ['CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE', 'ASSIGN', 'PAYMENT', 'LOGIN', 'LOGOUT'],
+    enum: [
+      'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE', 'ASSIGN', 'PAYMENT', 'LOGIN', 'LOGOUT',
+      'VALIDATE', 'CANCEL', 'CLOSE', 'REOPEN', 'ADJUST', 'CALCULATE', 'TRANSFER', 'INVENTORY',
+    ],
     required: true
   },
   user: {

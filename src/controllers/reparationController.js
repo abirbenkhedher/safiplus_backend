@@ -8,24 +8,14 @@ const Categorie = require('../models/Categorie');
 const Stock = require('../models/Stock');
 const MouvementStock = require('../models/MouvementStock');
 const logger = require('../config/logger');
+const valorisation = require('../services/valorisationService');
+const commissionService = require('../services/commissionService');
+const { getParametres } = require('../services/atelierService');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
 
-// ============================================================
-// ✅ CONSTANTES
-// ============================================================
-const STATUTS_NON_REPARE = [
-  'NON REPARE',
-  'SAV NON REPARE',
-  'SORTIE NON REPARE',
-];
-
-const STATUTS_CLOTURE = [
-  'REPARE',
-  'SAV REPARE',
-  'SORTIE REPARE',
-  'SAV SORTIE REPARE',
-];
+// ✅ Statuts : libellés normalisés (accents, tirets, réparé/réparée...)
+const { isStatutNonRepare, doitEtreCloturee } = require('../utils/statutReparation');
 
 const OBJECTID_FIELDS_TO_CLEAN = [
   'marque', 'modele', 'reparateur', 'reparateurSAV',
@@ -96,21 +86,8 @@ function enrichReparation(r) {
 //    (statut "sortie réparée" ET reste à payer = 0)
 // ============================================================
 function isReparationCloturee(reparation, statusLabel) {
-  const label = String(statusLabel || '')
-    .toUpperCase()
-    .trim()
-    .replace(/\s+/g, ' ');
-
-  if (!STATUTS_CLOTURE.includes(label)) return false;
-
-  const imprevusAcceptes = (reparation.diagnosticImprevus?.imprevus || [])
-    .filter((i) => i.accepte === true)
-    .reduce((sum, i) => sum + (Number(i.prixSupplementaire) || 0), 0);
-
-  const prixTotal = (Number(reparation.prix) || 0) + imprevusAcceptes;
-  const acompte = Number(reparation.acompte) || 0;
-
-  return acompte >= prixTotal && prixTotal > 0;
+  // statut « réparé / sortie réparé(e) » ET reste à payer = 0 (prix 0 inclus)
+  return doitEtreCloturee(reparation, statusLabel);
 }
 
 async function syncPannesWithCategories(panneNoms, categorieId) {
@@ -240,42 +217,32 @@ async function restaurerStockPourReparation(reparation, userId, motif) {
     }
 
     const details = [];
+    const params = await getParametres(reparation.boutique);
 
     for (const piece of aRestaurer) {
       try {
-        const stock = await Stock.findByIdAndUpdate(
-          piece.stock,
-          { $inc: { quantite: piece.quantite } },
-          { new: true }
-        );
-
-        if (!stock) continue;
-
-        const mouvement = await MouvementStock.create({
-          stock: stock._id,
-          boutique: stock.boutique, // ✅ multi-tenant
-          type: 'RESTAURATION_REPARATION',
-          quantite: piece.quantite,
-          quantiteAvant: stock.quantite - piece.quantite,
-          quantiteApres: stock.quantite,
-          reparationId: reparation._id,
-          motif: motif || `Restauration (${reparation.numero})`,
-          createdBy: userId,
+        // ✅ Retour valorisé au coût d'origine (CMP / lots) ; pas de retour
+        //    physique si la pièce avait été consommée en mode stock désactivé
+        const out = await valorisation.retour({
+          stockId: piece.stock, quantite: piece.quantite, coutUnitaire: piece.coutUnitaire,
+          stockPhysique: piece.stockPhysique !== false, params, userId,
+          type: 'RESTAURATION_REPARATION', motif: motif || `Restauration (${reparation.numero})`,
+          reparationId: reparation._id, sourceType: 'Reparation', sourceId: reparation._id,
         });
 
         piece.statut = 'restaure';
         piece.dateRestauration = new Date();
         piece.restaurePar = userId;
         piece.motifRestauration = motif || '';
-        piece.mouvementRestaurationId = mouvement._id;
+        piece.mouvementRestaurationId = out.mouvementId;
 
         details.push({
-          stock: stock._id,
+          stock: piece.stock,
           quantite: piece.quantite,
-          nouveauStock: stock.quantite,
+          nouveauStock: out.quantiteApres,
         });
 
-        logger.info(`♻️ Stock restauré: +${piece.quantite} × ${stock._id}`);
+        logger.info(`♻️ Stock restauré: +${piece.quantite} × ${piece.stock}`);
       } catch (err) {
         logger.error(`❌ Erreur restauration pièce ${piece._id}:`, err);
       }
@@ -305,8 +272,10 @@ exports.getAll = async (req, res) => {
       limit = 20, page = 1, sort = '-createdAt',
     } = req.query;
 
-    const limitNum = Math.min(parseInt(limit) || 20, 200);
-    const pageNum = Math.max(parseInt(page) || 1, 1);
+    // limit=all → toutes les lignes (option « Tous » de la pagination)
+    const showAll = String(limit) === 'all';
+    const limitNum = showAll ? 0 : Math.min(parseInt(limit) || 20, 200);
+    const pageNum = showAll ? 1 : Math.max(parseInt(page) || 1, 1);
 
     const query = { isDeleted: false };
 
@@ -508,7 +477,7 @@ exports.getAll = async (req, res) => {
       pagination: {
         total,
         page: pageNum,
-        pages: Math.ceil(total / limitNum),
+        pages: showAll ? (total ? 1 : 0) : Math.ceil(total / limitNum),
         limit: limitNum,
       },
     });
@@ -980,6 +949,31 @@ exports.update = async (req, res) => {
       };
     }
 
+    // ✅ Clôture : date saisie par l'admin prioritaire, sinon clôture automatique
+    //    dès que le statut est "réparé / sortie réparé" et que le reste à payer est 0.
+    const roleUp = String(req.user?.role || '').toUpperCase();
+    if (dateClotureOverride !== undefined && ['ADMIN', 'SUPER_ADMIN'].includes(roleUp)) {
+      if (dateClotureOverride === null || dateClotureOverride === '') {
+        reparation.dateCloture = null;
+      } else {
+        const d = new Date(dateClotureOverride);
+        if (isNaN(d.getTime())) {
+          return res.status(400).json({ success: false, message: 'Date de clôture invalide' });
+        }
+        reparation.dateCloture = d;
+      }
+    } else if (!reparation.dateCloture) {
+      const finalStatusDoc = reparation.status ? await Status.findById(reparation.status) : null;
+      if (isReparationCloturee(reparation, finalStatusDoc?.label)) {
+        reparation.dateCloture = new Date();
+        reparation.modifications = [...(reparation.modifications || []), {
+          field: 'dateCloture', oldValue: null, newValue: reparation.dateCloture,
+          modifiedBy: req.user.id, modifiedAt: new Date(), comment: 'Clôture automatique (réparé + reste 0)',
+        }];
+        logger.info(`🔒 Réparation ${reparation.numero} clôturée automatiquement`);
+      }
+    }
+
     const finalPrix = reparation.prix || 0;
     const finalAcompte = reparation.acompte || 0;
     if (finalAcompte >= finalPrix && finalPrix > 0) reparation.paymentType = 'paid';
@@ -991,6 +985,21 @@ exports.update = async (req, res) => {
       if (newStatusDoc && newStatusDoc.label === 'Livré') {
         reparation.dateLivraison = new Date();
       }
+    }
+
+    // ✅ Intervention partagée : répartition explicite des commissions
+    if (req.body.repartitionCommission !== undefined) {
+      const canSplit = ['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)
+        || (req.user.permissions || []).some((p) => ['commissions_valider', 'remuneration_regles'].includes(p));
+      if (!canSplit) {
+        return res.status(403).json({ success: false, message: 'Permission requise pour répartir les commissions' });
+      }
+      const old = (reparation.repartitionCommission || []).map((r) => ({ reparateur: String(r.reparateur), pourcentage: r.pourcentage }));
+      reparation.repartitionCommission = Array.isArray(req.body.repartitionCommission) ? req.body.repartitionCommission : [];
+      reparation.modifications = [...(reparation.modifications || []), {
+        field: 'repartitionCommission', oldValue: old, newValue: req.body.repartitionCommission,
+        modifiedBy: req.user.id, modifiedAt: new Date(),
+      }];
     }
 
     const trackedFields = [
@@ -1086,8 +1095,8 @@ exports.update = async (req, res) => {
       const newStatusDoc = await Status.findById(status);
       const newStatusLabel = (newStatusDoc?.label || '').toUpperCase().trim();
 
-      const wasNonRepare = STATUTS_NON_REPARE.includes(oldStatusLabel);
-      const isNonRepare = STATUTS_NON_REPARE.includes(newStatusLabel);
+      const wasNonRepare = isStatutNonRepare(oldStatusLabel);
+      const isNonRepare = isStatutNonRepare(newStatusLabel);
 
       if (!wasNonRepare && isNonRepare) {
         logger.info(
@@ -1193,6 +1202,7 @@ exports.update = async (req, res) => {
     console.log('🔍 [UPDATE] dateCloture en BDD =', populated?.dateCloture);
 
     logger.info(`Réparation modifiée: ${reparation.numero} par ${req.user.username}`);
+    commissionService.syncReparationSafe(reparation._id, req.user._id); // ✅ commissions
 
     res.json({
       success: true,
@@ -1260,8 +1270,8 @@ exports.changeStatus = async (req, res) => {
 
     let stockRestauration = null;
 
-    const wasNonRepare = STATUTS_NON_REPARE.includes(oldStatusLabel);
-    const isNonRepare = STATUTS_NON_REPARE.includes(newStatusLabel);
+    const wasNonRepare = isStatutNonRepare(oldStatusLabel);
+    const isNonRepare = isStatutNonRepare(newStatusLabel);
 
     if (!wasNonRepare && isNonRepare) {
       logger.info(
@@ -1308,6 +1318,7 @@ exports.changeStatus = async (req, res) => {
       .lean();
 
     logger.info(`Statut changé: ${reparation.numero} → ${statusExists.label} par ${req.user.username}`);
+    commissionService.syncReparationSafe(reparation._id, req.user._id); // ✅ commissions
 
     res.json({
       success: true,
@@ -1358,6 +1369,7 @@ exports.assignReparateur = async (req, res) => {
       .lean();
 
     logger.info(`Réparateur assigné: ${reparation.numero} par ${req.user.username}`);
+    commissionService.syncReparationSafe(reparation._id, req.user._id); // ✅ commissions
 
     res.json({
       success: true,
@@ -1400,6 +1412,7 @@ exports.delete = async (req, res) => {
     await reparation.save();
 
     logger.info(`Réparation supprimée: ${reparation.numero} par ${req.user.username}`);
+    commissionService.syncReparationSafe(reparation._id, req.user._id); // ✅ annule / contre-passe
 
     res.json({
       success: true,
@@ -1499,6 +1512,7 @@ exports.deleteMany = async (req, res) => {
     );
 
     logger.info(`${result.modifiedCount} réparation(s) supprimée(s) par ${req.user.username}`);
+    ids.forEach((id) => commissionService.syncReparationSafe(id, req.user._id)); // ✅ commissions
 
     res.json({
       success: true,

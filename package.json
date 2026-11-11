@@ -9,8 +9,11 @@
     "seed": "node seed.js",
     "migrate:all": "node scripts/migrateAll.js",
     "migrate:tenant": "node scripts/migrateMultiTenant.js",
+    "migrate:multiboutique": "node scripts/migrateMultiBoutique.js",
+    "rattrapage:clotures": "node scripts/rattrapageClotures.js",
     "superadmin": "node scripts/superAdmin.js",
-    "seed:pannes": "node scripts/seedPannes.js"
+    "seed:pannes": "node scripts/seedPannes.js",
+    "test:atelier": "node scripts/testAtelier.js"
   },
   "keywords": [],
   "author": "",

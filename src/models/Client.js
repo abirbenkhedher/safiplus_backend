@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const tenantPlugin = require('./plugins/tenantPlugin');
 const Counter = require('./Counter');
+const { getTenant } = require('../config/tenantContext');
 
 const clientSchema = new mongoose.Schema({
   code: {
@@ -67,21 +68,41 @@ const clientSchema = new mongoose.Schema({
 });
 
 // ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
-// ✅ Clients propres à chaque boutique
-clientSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+// ✅ Clients COMMUNS à toutes les boutiques de l'organisation
+clientSchema.plugin(tenantPlugin, { scope: 'organisation' });
+
+// Boutique où le client a été créé (information uniquement, aucun filtrage)
+clientSchema.add({
+  boutique: { type: mongoose.Schema.Types.ObjectId, ref: 'Boutique', default: null },
+});
+
+/** Plus grand numéro de code client (Cxxx) de l'organisation. */
+clientSchema.statics.maxCodeNumber = async function (organisationId) {
+  const res = await this.collection.aggregate([
+    { $match: { organisation: organisationId, code: { $regex: '^C[0-9]+$' } } },
+    { $project: { n: { $toInt: { $substrCP: ['$code', 1, 20] } } } },
+    { $group: { _id: null, max: { $max: '$n' } } },
+  ]).toArray();
+  return res[0]?.max || 0;
+};
 
 // ============================================================
 // ✅ Middleware : génération UNIQUEMENT du code client (C001, C002...)
 // ❌ PLUS AUCUNE génération de code fidélité
 // ============================================================
 clientSchema.pre('validate', async function() {
+  if (this.isNew && !this.boutique) {
+    const ctx = getTenant();
+    if (ctx && !ctx.system && ctx.boutique) this.boutique = ctx.boutique;
+  }
+
   // Génération du code client (C001, C002, ...)
   if (this.isNew && !this.code) {
     try {
-      // ✅ Compteur par boutique (C001, C002... propres à chaque boutique)
-      const boutiqueId = this.boutique;
-      const seq = await Counter.next(`client:b:${boutiqueId}`, () =>
-        this.constructor.countDocuments({ boutique: boutiqueId })
+      // ✅ Compteur par organisation (codes uniques dans toutes les boutiques)
+      const orgId = this.organisation;
+      const seq = await Counter.next(`client:o:${orgId}`, () =>
+        this.constructor.maxCodeNumber(orgId)
       );
       const padded = String(seq).padStart(3, '0');
       this.code = `C${padded}`;
@@ -101,13 +122,14 @@ clientSchema.pre('validate', async function() {
 // ============================================================
 // ✅ Index
 // ============================================================
-// ✅ Unicité par boutique
+// ✅ Unicité par organisation (clients communs aux boutiques)
+// ⚠️ Données existantes : lancer `npm run migrate:multiboutique` (codes en double + index)
 clientSchema.index(
-  { boutique: 1, code: 1 },
+  { organisation: 1, code: 1 },
   { unique: true, partialFilterExpression: { code: { $type: 'string' } } }
 );
 clientSchema.index(
-  { boutique: 1, codeFidelite: 1 },
+  { organisation: 1, codeFidelite: 1 },
   { unique: true, partialFilterExpression: { codeFidelite: { $type: 'string' } } }
 );
 

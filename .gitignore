@@ -5,3 +5,6 @@ build/
 *.log
 # Sauvegardes de la base (données clients)
 backup/
+
+# Pièces jointes des dépenses (module atelier)
+uploads/

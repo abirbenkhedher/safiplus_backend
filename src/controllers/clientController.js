@@ -321,8 +321,10 @@ exports.getAll = async (req, res) => {
       page = 1,
     } = req.query;
 
-    const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 200);
-    const safePage = Math.max(parseInt(page) || 1, 1);
+    // limit=all → toutes les lignes (option « Tous » de la pagination)
+    const showAll = String(limit) === 'all';
+    const safeLimit = showAll ? 0 : Math.min(Math.max(parseInt(limit) || 20, 1), 200);
+    const safePage = showAll ? 1 : Math.max(parseInt(page) || 1, 1);
     const skip = (safePage - 1) * safeLimit;
 
     const query = {};
@@ -467,7 +469,7 @@ exports.getAll = async (req, res) => {
         total,
         page: safePage,
         limit: safeLimit,
-        pages: Math.ceil(total / safeLimit),
+        pages: showAll ? (total ? 1 : 0) : Math.ceil(total / safeLimit),
       },
     });
   } catch (error) {

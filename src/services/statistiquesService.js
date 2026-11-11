@@ -1002,6 +1002,8 @@ exports.getBenefice = async (from, to) => {
   const end = new Date(to + "T23:59:59.999Z");
   const matchDepense = {
     isDeleted: false,
+    statut: { $ne: "annulee" }, // une dépense annulée ne compte pas
+    type: { $in: ["REPARATION", "DIVERSE"] }, // achats de stock : via les consommations
     dateDepense: { $gte: start, $lte: end },
   };
 
@@ -1076,6 +1078,8 @@ exports.getBenefice = async (from, to) => {
     {
       $match: {
         isDeleted: false,
+        statut: { $ne: "annulee" },
+        type: { $in: ["REPARATION", "DIVERSE"] },
         dateDepense: { $gte: prevStart, $lte: prevEnd },
       },
     },
@@ -1272,5 +1276,182 @@ exports.getBenefice = async (from, to) => {
     marge_par_famille: margeFamille,
     top_rentables: topRentables,
     top_depenses: topDepenses, // ✅ NOUVEAU
+  };
+};
+// ============================================================
+// 8. ✅ BÉNÉFICE DÉTAILLÉ PAR FAMILLE (et par catégorie)
+// ------------------------------------------------------------
+// Même base que l'onglet Bénéfices (réparations reçues sur la période,
+// prix TTC + imprévus acceptés ; dépenses réparation + diverses).
+//
+// Par famille :
+//  - Données DIRECTES (propres aux réparations de la famille) :
+//      CA, encaissé, reste, coût réel des pièces consommées (dossier +
+//      déclarations rattachées), commissions → marge directe.
+//  - Dépenses réparation / diverses : non rattachées à une réparation →
+//      réparties au prorata du CA (au nombre de réparations si CA = 0).
+//      Bénéfice = CA − quote-part des dépenses. La somme des familles
+//      est égale au bénéfice net de l'onglet Bénéfices.
+// ============================================================
+const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+const pct = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);
+
+exports.getBeneficeFamilles = async (from, to) => {
+  const Commission = require("../models/Commission");
+  const DeclarationJournaliere = require("../models/DeclarationJournaliere");
+
+  const match = buildMatch(from, to);
+  const start = new Date(from);
+  const end = new Date(to + "T23:59:59.999Z");
+
+  // ----------------------------------------------------------
+  // 1. Réparations de la période (une ligne par réparation)
+  // ----------------------------------------------------------
+  const reps = await Reparation.aggregate([
+    { $match: match },
+    { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "cat" } },
+    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: "familles", localField: "cat.famille", foreignField: "_id", as: "fam" } },
+    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        famille: { $ifNull: ["$fam.nom", "Non classé"] },
+        categorie: { $ifNull: ["$cat.nom", "Sans catégorie"] },
+        ca: getPrixTotalExpr(),
+        encaisse: { $ifNull: ["$acompte", 0] },
+        pieces: {
+          $filter: {
+            input: { $ifNull: ["$piecesStock", []] },
+            as: "p",
+            cond: { $eq: ["$$p.statut", "consomme"] },
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        famille: 1, categorie: 1, ca: 1, encaisse: 1,
+        coutPieces: { $sum: { $map: { input: "$pieces", as: "p", in: { $ifNull: ["$$p.coutTotal", 0] } } } },
+        piecesSansCout: {
+          $size: { $filter: { input: "$pieces", as: "p", cond: { $eq: [{ $ifNull: ["$$p.coutTotal", null] }, null] } } },
+        },
+      },
+    },
+  ]);
+  const ids = reps.map((r) => r._id);
+
+  // ----------------------------------------------------------
+  // 2. Coûts rattachés aux réparations : déclarations + commissions
+  // ----------------------------------------------------------
+  const [declAgg, comAgg] = ids.length
+    ? await Promise.all([
+        DeclarationJournaliere.aggregate([
+          { $match: { statut: { $in: ["validee", "cloturee"] }, "lignes.reparation": { $in: ids } } },
+          { $unwind: "$lignes" },
+          { $match: { "lignes.statut": "active", "lignes.reparation": { $in: ids } } },
+          { $group: { _id: "$lignes.reparation", c: { $sum: { $ifNull: ["$lignes.coutTotal", 0] } } } },
+        ]),
+        // calculées + validées (les contre-écritures négatives sont « validee » → nettes)
+        Commission.aggregate([
+          { $match: { reparation: { $in: ids }, statut: { $in: ["calculee", "validee"] } } },
+          { $group: { _id: "$reparation", c: { $sum: "$montant" } } },
+        ]),
+      ])
+    : [[], []];
+  const declMap = new Map(declAgg.map((d) => [String(d._id), d.c]));
+  const comMap = new Map(comAgg.map((d) => [String(d._id), d.c]));
+
+  // ----------------------------------------------------------
+  // 3. Dépenses à répartir (même règle que l'onglet Bénéfices)
+  // ----------------------------------------------------------
+  const depAgg = await Depense.aggregate([
+    {
+      $match: {
+        isDeleted: false,
+        statut: { $ne: "annulee" },
+        type: { $in: ["REPARATION", "DIVERSE"] },
+        dateDepense: { $gte: start, $lte: end },
+      },
+    },
+    { $group: { _id: "$type", total: { $sum: "$montant" } } },
+  ]);
+  const depReparation = depAgg.find((d) => d._id === "REPARATION")?.total || 0;
+  const depDiverse = depAgg.find((d) => d._id === "DIVERSE")?.total || 0;
+
+  // ----------------------------------------------------------
+  // 4. Regroupement famille → catégories
+  // ----------------------------------------------------------
+  const vide = () => ({ nb: 0, ca: 0, encaisse: 0, cout_pieces: 0, commissions: 0, pieces_sans_cout: 0 });
+  const add = (acc, r, coutPieces, com) => {
+    acc.nb += 1;
+    acc.ca += r.ca;
+    acc.encaisse += r.encaisse;
+    acc.cout_pieces += coutPieces;
+    acc.commissions += com;
+    acc.pieces_sans_cout += r.piecesSansCout;
+  };
+  const familles = new Map();
+  const total = vide();
+  for (const r of reps) {
+    const coutPieces = (r.coutPieces || 0) + (declMap.get(String(r._id)) || 0);
+    const com = comMap.get(String(r._id)) || 0;
+    if (!familles.has(r.famille)) familles.set(r.famille, { ...vide(), categories: new Map() });
+    const f = familles.get(r.famille);
+    if (!f.categories.has(r.categorie)) f.categories.set(r.categorie, vide());
+    add(f, r, coutPieces, com);
+    add(f.categories.get(r.categorie), r, coutPieces, com);
+    add(total, r, coutPieces, com);
+  }
+
+  // Clé de répartition : CA (ou nombre de réparations si CA total = 0)
+  const parCA = total.ca > 0;
+  const part = (x) => (parCA ? x.ca / total.ca : total.nb > 0 ? x.nb / total.nb : 0);
+
+  const finaliser = (x, p = part(x)) => {
+    const qpRep = depReparation * p;
+    const qpDiv = depDiverse * p;
+    const margeDirecte = x.ca - x.cout_pieces - x.commissions;
+    const benefice = x.ca - qpRep - qpDiv;
+    return {
+      nb_reparations: x.nb,
+      ca: r3(x.ca),
+      encaisse: r3(x.encaisse),
+      reste: r3(Math.max(0, x.ca - x.encaisse)),
+      part_ca: Math.round(p * 1000) / 10,
+      cout_pieces: r3(x.cout_pieces),
+      commissions: r3(x.commissions),
+      marge_directe: r3(margeDirecte),
+      taux_marge_directe: pct(margeDirecte, x.ca),
+      depenses_reparation: r3(qpRep),
+      depenses_diverse: r3(qpDiv),
+      depenses_total: r3(qpRep + qpDiv),
+      benefice: r3(benefice),
+      taux_benefice: pct(benefice, x.ca),
+      panier_moyen: x.nb > 0 ? r3(x.ca / x.nb) : 0,
+      benefice_moyen: x.nb > 0 ? r3(benefice / x.nb) : 0,
+      pieces_sans_cout: x.pieces_sans_cout,
+    };
+  };
+
+  const lignes = [...familles.entries()]
+    .map(([nom, f]) => ({
+      famille: nom,
+      ...finaliser(f),
+      categories: [...f.categories.entries()]
+        .map(([cat, c]) => ({ categorie: cat, ...finaliser(c) }))
+        .sort((a, b) => b.benefice - a.benefice),
+    }))
+    .sort((a, b) => b.benefice - a.benefice);
+
+  return {
+    periode: { from, to },
+    cle_repartition: parCA ? "ca" : "nb_reparations",
+    depenses_a_repartir: {
+      reparation: r3(depReparation),
+      diverse: r3(depDiverse),
+      total: r3(depReparation + depDiverse),
+    },
+    totaux: finaliser(total, 1), // 100 % des dépenses (égal à l'onglet Bénéfices)
+    familles: lignes,
   };
 };

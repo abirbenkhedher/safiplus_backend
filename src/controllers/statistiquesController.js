@@ -154,3 +154,17 @@ exports.getBenefice = async (req, res) => {
     res.status(500).json({ message: "Erreur lors du chargement du bénéfice" });
   }
 };
+// ============================================================
+// ✅ GET /api/statistiques/benefice-familles
+//    Bénéfice détaillé par famille (et par catégorie)
+// ============================================================
+exports.getBeneficeFamilles = async (req, res) => {
+  try {
+    const { from, to } = getPeriod(req);
+    const data = await statistiquesService.getBeneficeFamilles(from, to);
+    res.json(data);
+  } catch (error) {
+    console.error("Erreur getBeneficeFamilles:", error);
+    res.status(500).json({ message: "Erreur lors du chargement du bénéfice par famille" });
+  }
+};

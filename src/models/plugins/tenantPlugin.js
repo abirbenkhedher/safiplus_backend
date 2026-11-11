@@ -1,5 +1,12 @@
 const mongoose = require('mongoose');
-const { getTenant, TenantError } = require('../../config/tenantContext');
+const {
+  getTenant,
+  TenantError,
+  BOUTIQUE_REQUIRED,
+  BOUTIQUE_REQUIRED_MESSAGE,
+  GLOBAL_READONLY,
+  GLOBAL_READONLY_MESSAGE,
+} = require('../../config/tenantContext');
 
 // ============================================================
 // ✅ PLUGIN MULTI-TENANT
@@ -36,6 +43,12 @@ const QUERY_OPS = [
 ];
 
 const UPDATE_OPS = ['findOneAndUpdate', 'updateOne', 'updateMany'];
+const WRITE_OPS = [
+  'findOneAndUpdate', 'findOneAndDelete', 'findOneAndReplace',
+  'updateOne', 'updateMany', 'replaceOne', 'deleteOne', 'deleteMany',
+];
+
+const globalReadOnlyError = () => new TenantError(GLOBAL_READONLY_MESSAGE, 403, GLOBAL_READONLY);
 const TENANT_FIELDS = ['organisation', 'boutique'];
 
 const sameId = (a, b) => a && b && String(a) === String(b);
@@ -43,7 +56,14 @@ const sameId = (a, b) => a && b && String(a) === String(b);
 module.exports = function tenantPlugin(schema, options = {}) {
   const scope = options.scope || 'organisation';
   const requireBoutique = !!options.requireBoutique;
+  // globalDocs : boutique = null → document "global" de l'organisation
+  // (ex : dépense administrative), visible UNIQUEMENT en vue globale (admin),
+  // créé seulement sur demande explicite (doc.$locals.tenantGlobal = true).
+  const globalDocs = !!options.globalDocs;
+  // Données propres aux boutiques → lecture seule en vue globale
+  // (les modèles à boutique facultative, ex : historique, messages, restent libres)
   const isBoutiqueScope = scope === 'boutique';
+  const readOnlyInGlobal = isBoutiqueScope && (requireBoutique || globalDocs);
 
   schema.add({
     organisation: {
@@ -82,7 +102,8 @@ module.exports = function tenantPlugin(schema, options = {}) {
     const filter = { organisation: ctx.organisation };
     if (isBoutiqueScope) {
       const list = ctx.boutiques || [];
-      filter.boutique = requireBoutique ? { $in: list } : { $in: [...list, null] };
+      const withNull = !requireBoutique && (!globalDocs || !!ctx.globalView);
+      filter.boutique = withNull ? { $in: [...list, null] } : { $in: list };
     }
     return filter;
   };
@@ -95,6 +116,13 @@ module.exports = function tenantPlugin(schema, options = {}) {
     if (!filter) return;
 
     this.and([filter]);
+
+    // ✅ Vue globale = consultation : écritures interdites sur les données des
+    // boutiques ; seuls les documents globaux (boutique null) restent modifiables.
+    if (readOnlyInGlobal && WRITE_OPS.includes(this.op) && getTenant().globalView) {
+      if (!globalDocs) throw globalReadOnlyError();
+      this.and([{ boutique: null }]);
+    }
 
     // Interdire la modification des champs tenant via un update
     if (UPDATE_OPS.includes(this.op)) {
@@ -120,6 +148,7 @@ module.exports = function tenantPlugin(schema, options = {}) {
   // ----------------------------------------------------------
   // Agrégations : $match en tête de pipeline
   // ----------------------------------------------------------
+  
   schema.pre('aggregate', function () {
     const filter = buildFilter();
     if (!filter) return;
@@ -138,6 +167,16 @@ module.exports = function tenantPlugin(schema, options = {}) {
   // ----------------------------------------------------------
   // Création : remplissage organisation / boutique
   // ----------------------------------------------------------
+  // ✅ Vue globale = consultation (création ET modification par doc.save())
+  const assertWritable = function () {
+    const ctx = getTenant();
+    if (!readOnlyInGlobal || !ctx || ctx.system || !ctx.globalView) return;
+    const globalDoc = globalDocs && (this.isNew ? !!this.$locals?.tenantGlobal : !this.boutique);
+    if (!globalDoc) throw globalReadOnlyError();
+  };
+  schema.pre('validate', assertWritable);
+  schema.pre('save', assertWritable);
+
   schema.pre('validate', function () {
     if (!this.isNew) return;
 
@@ -152,6 +191,17 @@ module.exports = function tenantPlugin(schema, options = {}) {
 
     if (!isBoutiqueScope) return;
 
+    if (globalDocs && this.$locals && this.$locals.tenantGlobal) {
+      if (!ctx.globalView) {
+        throw new TenantError(
+          "Ce document global se crée uniquement en vue « Toutes les boutiques » (administrateur).",
+          403
+        );
+      }
+      this.boutique = null;
+      return;
+    }
+
     const allowed = ctx.allowed || ctx.boutiques || [];
     const provided = this.boutique;
 
@@ -162,11 +212,8 @@ module.exports = function tenantPlugin(schema, options = {}) {
       this.boutique = ctx.boutique;
     } else if ((ctx.boutiques || []).length === 1) {
       this.boutique = ctx.boutiques[0];
-    } else if (requireBoutique) {
-      throw new TenantError(
-        'Veuillez sélectionner une boutique (en haut de l\'écran) avant de créer cet élément.',
-        400
-      );
+    } else if (requireBoutique || globalDocs) {
+      throw new TenantError(BOUTIQUE_REQUIRED_MESSAGE, 400, BOUTIQUE_REQUIRED);
     } else {
       this.boutique = null;
     }

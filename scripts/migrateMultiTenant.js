@@ -29,11 +29,11 @@ require('../src/models/Counter');
 // Données partagées au niveau de l'organisation
 const ORG_MODELS = [
   'Famille', 'Categorie', 'Objet', 'Marque', 'Modele',
-  'Panne', 'Status', 'Zone', 'TypeArticle',
+  'Panne', 'Status', 'Zone', 'TypeArticle', 'Client',
 ];
 // Données propres à une boutique
 const BOUTIQUE_MODELS = [
-  'Client', 'Reparation', 'Stock', 'MouvementStock', 'Depense', 'History', 'TeamMessage',
+  'Reparation', 'Stock', 'MouvementStock', 'Depense', 'History', 'TeamMessage',
 ];
 
 [...ORG_MODELS, ...BOUTIQUE_MODELS].forEach((m) => require(`../src/models/${m}`));

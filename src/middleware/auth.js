@@ -89,6 +89,8 @@ const buildTenantContext = async (user, req) => {
   } else if (allowed.length === 1) {
     active = allowed[0];
   }
+  // Sinon : vue globale (toutes les boutiques autorisées) = consultation seulement
+  // pour les données des boutiques (cf. tenantPlugin, GLOBAL_READONLY).
 
   return {
     ok: true,
@@ -98,6 +100,8 @@ const buildTenantContext = async (user, req) => {
       boutique: active,
       allowed,
       isOwner: !!user.isOwner,
+      // Vue globale admin : voit aussi les documents globaux (dépenses administratives)
+      globalView: visible.length > 1 && user.role === 'ADMIN',
     },
   };
 };

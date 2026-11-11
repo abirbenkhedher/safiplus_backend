@@ -20,10 +20,24 @@ type: {
     'ANNULATION_CONSOMMATION',   // ✅ NOUVEAU
     'AJUSTEMENT',
     'CREATION',
+    // ✅ Module atelier
+    'ENTREE_ACHAT',
+    'ANNULATION_ACHAT',
+    'CONSOMMATION_JOURNALIERE',
+    'ANNULATION_DECLARATION',
+    'TRANSFERT_SORTIE',
+    'TRANSFERT_ENTREE',
+    'INVENTAIRE',
   ],
   required: true,
   index: true,
 },
+
+  // ✅ Valorisation du mouvement (coût unitaire retenu)
+  coutUnitaire: { type: Number, default: null },
+  // ✅ Référence source (facture, déclaration, transfert...)
+  sourceType: { type: String, default: null },
+  sourceId: { type: mongoose.Schema.Types.ObjectId, default: null },
 
   quantite: {
     type: Number,

@@ -34,4 +34,7 @@ router.get("/statuts", statistiquesController.getStatuts);
 // ✅ NOUVEAU : Bénéfice
 router.get("/benefice", statistiquesController.getBenefice);
 
+// ✅ Bénéfice détaillé par famille / catégorie
+router.get("/benefice-familles", statistiquesController.getBeneficeFamilles);
+
 module.exports = router;

@@ -3,6 +3,7 @@ const router = express.Router();
 const stockController = require('../controllers/stockController');
 const { requireAuth } = require('../middleware/auth');
 const { requirePermission, requireAnyPermission } = require('../middleware/permissions');
+const { idempotent } = require('../middleware/idempotency');
 
 // Lecture : module stock, ou besoin du stock pour une reparation / le dashboard
 const canRead = requireAnyPermission(['stock', 'stock:read', 'reparations', 'dashboard']);
@@ -17,6 +18,10 @@ router.patch('/:id/quantite', requireAuth, canWrite, stockController.setQuantite
 router.post('/:id/increment', requireAuth, canWrite, stockController.increment);
 router.post('/consommer', requireAuth, requireAnyPermission(['stock', 'reparations']), stockController.consommerPourReparation);
 router.get('/:id/mouvements', requireAuth, canRead, stockController.getMouvements);
+// ✅ Module atelier : coût, transferts, inventaire
+router.get('/:id/cout', requireAuth, canRead, stockController.getCout);
+router.post('/transfert', requireAuth, canWrite, idempotent, stockController.transfert);
+router.post('/inventaire', requireAuth, canWrite, idempotent, stockController.inventaire);
 router.delete('/:id', requireAuth, canWrite, stockController.delete);
 // ✅ NOUVELLES ROUTES
 router.patch(
