@@ -73,6 +73,21 @@ const buildMatch = (from, to) => {
   };
 };
 
+// ✅ PERFORMANCE : pré-regroupe les réparations par identifiants AVANT les jointures
+//    ($lookup sur quelques dizaines de lignes au lieu d'une par réparation).
+//    Fournit _n (nombre), _ca (CA) et _enc (encaissé) à sommer ensuite.
+const compact = (keys) => [
+  {
+    $group: {
+      _id: Object.fromEntries(keys.map((k) => [k, "$" + k])),
+      _n: { $sum: 1 },
+      _ca: { $sum: getPrixTotalExpr() },
+      _enc: { $sum: { $ifNull: ["$acompte", 0] } },
+    },
+  },
+  { $replaceRoot: { newRoot: { $mergeObjects: ["$_id", { _n: "$_n", _ca: "$_ca", _enc: "$_enc" }] } } },
+];
+
 // ============================================================
 // 1. OVERVIEW (Vue d'ensemble)
 // ============================================================
@@ -155,6 +170,7 @@ exports.getOverview = async (from, to) => {
   // --- CA par Famille ---
   const caParFamille = await Reparation.aggregate([
     { $match: match },
+    ...compact(["categorie"]),
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "categorieData" } },
     { $unwind: "$categorieData" },
     { $lookup: { from: "familles", localField: "categorieData.famille", foreignField: "_id", as: "familleData" } },
@@ -163,7 +179,7 @@ exports.getOverview = async (from, to) => {
       $group: {
         _id: "$familleData._id",
         nom: { $first: "$familleData.nom" },
-        ca: { $sum: prixTotalExpr }
+        ca: { $sum: "$_ca" }
       }
     },
     { $sort: { ca: -1 } },
@@ -198,6 +214,7 @@ exports.getFamilles = async (from, to) => {
 
   const table = await Reparation.aggregate([
     { $match: match },
+    ...compact(["categorie"]),
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "catData" } },
     { $unwind: "$catData" },
     { $lookup: { from: "familles", localField: "catData.famille", foreignField: "_id", as: "famData" } },
@@ -206,9 +223,9 @@ exports.getFamilles = async (from, to) => {
       $group: {
         _id: "$famData._id",
         nom: { $first: "$famData.nom" },
-        ca: { $sum: prixTotalExpr },
-        encaisse: { $sum: { $ifNull: ["$acompte", 0] } },
-        nb_reparations: { $sum: 1 }
+        ca: { $sum: "$_ca" },
+        encaisse: { $sum: "$_enc" },
+        nb_reparations: { $sum: "$_n" }
       }
     },
     {
@@ -243,6 +260,7 @@ exports.getCategories = async (from, to) => {
 
   const table = await Reparation.aggregate([
     { $match: match },
+    ...compact(["categorie"]),
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "catData" } },
     { $unwind: "$catData" },
     { $lookup: { from: "familles", localField: "catData.famille", foreignField: "_id", as: "famData" } },
@@ -252,9 +270,9 @@ exports.getCategories = async (from, to) => {
         _id: "$catData._id",
         nom: { $first: "$catData.nom" },
         famille: { $first: "$famData.nom" },
-        ca: { $sum: prixTotalExpr },
-        encaisse: { $sum: { $ifNull: ["$acompte", 0] } },
-        nb_reparations: { $sum: 1 }
+        ca: { $sum: "$_ca" },
+        encaisse: { $sum: "$_enc" },
+        nb_reparations: { $sum: "$_n" }
       }
     },
     {
@@ -465,9 +483,10 @@ exports.getReparations = async (from, to) => {
   // ============================================================
   const topCategories = await Reparation.aggregate([
     { $match: match },
+    ...compact(["categorie"]),
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "catData" } },
     { $unwind: "$catData" },
-    { $group: { _id: "$catData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$catData.nom", count: { $sum: "$_n" } } },
     { $sort: { count: -1 } },
     { $limit: 5 },
     { $project: { _id: 0, nom: "$_id", count: 1 } }
@@ -478,9 +497,10 @@ exports.getReparations = async (from, to) => {
   // ============================================================
   const topObjets = await Reparation.aggregate([
     { $match: match },
+    ...compact(["objet"]),
     { $lookup: { from: "objets", localField: "objet", foreignField: "_id", as: "objData" } },
     { $unwind: "$objData" },
-    { $group: { _id: "$objData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$objData.nom", count: { $sum: "$_n" } } },
     { $sort: { count: -1 } },
     { $limit: 5 },
     { $project: { _id: 0, nom: "$_id", count: 1 } }
@@ -491,9 +511,10 @@ exports.getReparations = async (from, to) => {
   // ============================================================
   const topMarques = await Reparation.aggregate([
     { $match: match },
+    ...compact(["marque"]),
     { $lookup: { from: "marques", localField: "marque", foreignField: "_id", as: "marqueData" } },
     { $unwind: "$marqueData" },
-    { $group: { _id: "$marqueData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$marqueData.nom", count: { $sum: "$_n" } } },
     { $sort: { count: -1 } },
     { $limit: 5 },
     { $project: { _id: 0, nom: "$_id", count: 1 } }
@@ -504,9 +525,10 @@ exports.getReparations = async (from, to) => {
   // ============================================================
   const topModeles = await Reparation.aggregate([
     { $match: match },
+    ...compact(["modele"]),
     { $lookup: { from: "modeles", localField: "modele", foreignField: "_id", as: "modeleData" } },
     { $unwind: "$modeleData" },
-    { $group: { _id: "$modeleData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$modeleData.nom", count: { $sum: "$_n" } } },
     { $sort: { count: -1 } },
     { $limit: 5 },
     { $project: { _id: 0, nom: "$_id", count: 1 } }
@@ -517,11 +539,12 @@ exports.getReparations = async (from, to) => {
   // ============================================================
   const parType = await Reparation.aggregate([
     { $match: match },
+    ...compact(["categorie"]),
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "catData" } },
     { $unwind: "$catData" },
     { $lookup: { from: "familles", localField: "catData.famille", foreignField: "_id", as: "famData" } },
     { $unwind: "$famData" },
-    { $group: { _id: "$famData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$famData.nom", count: { $sum: "$_n" } } },
     { $project: { _id: 0, type: "$_id", count: 1 } }
   ]);
 
@@ -578,9 +601,10 @@ exports.getAppareils = async (from, to) => {
   // 1. Top Marques
   const topMarques = await Reparation.aggregate([
     { $match: match },
+    ...compact(["marque"]),
     { $lookup: { from: "marques", localField: "marque", foreignField: "_id", as: "marqueData" } },
     { $unwind: { path: "$marqueData", preserveNullAndEmptyArrays: true } },
-    { $group: { _id: "$marqueData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$marqueData.nom", count: { $sum: "$_n" } } },
     { $match: { _id: { $ne: null } } },
     { $sort: { count: -1 } },
     { $limit: 5 },
@@ -590,9 +614,10 @@ exports.getAppareils = async (from, to) => {
   // 2. Top Modèles
   const topModeles = await Reparation.aggregate([
     { $match: match },
+    ...compact(["modele"]),
     { $lookup: { from: "modeles", localField: "modele", foreignField: "_id", as: "modeleData" } },
     { $unwind: { path: "$modeleData", preserveNullAndEmptyArrays: true } },
-    { $group: { _id: "$modeleData.nom", count: { $sum: 1 } } },
+    { $group: { _id: "$modeleData.nom", count: { $sum: "$_n" } } },
     { $match: { _id: { $ne: null } } },
     { $sort: { count: -1 } },
     { $limit: 5 },
@@ -602,6 +627,7 @@ exports.getAppareils = async (from, to) => {
   // 3. Tableau détaillé (Marque + Modèle + Objet + Catégorie)
   const table = await Reparation.aggregate([
     { $match: match },
+    ...compact(["marque","modele","objet","categorie"]),
     { $lookup: { from: "marques", localField: "marque", foreignField: "_id", as: "marqueData" } },
     { $unwind: { path: "$marqueData", preserveNullAndEmptyArrays: true } },
     { $lookup: { from: "modeles", localField: "modele", foreignField: "_id", as: "modeleData" } },
@@ -621,9 +647,9 @@ exports.getAppareils = async (from, to) => {
           categorie: "$catData.nom",
           famille: "$famData.nom"
         },
-        nb_reparations: { $sum: 1 },
-        ca: { $sum: prixTotalExpr },
-        encaisse: { $sum: { $ifNull: ["$acompte", 0] } }
+        nb_reparations: { $sum: "$_n" },
+        ca: { $sum: "$_ca" },
+        encaisse: { $sum: "$_enc" }
       }
     },
     {
@@ -997,11 +1023,12 @@ exports.getStatuts = async (from, to) => {
 // ============================================================
 // ✅ BASE COMMUNE DU BÉNÉFICE (onglets « Bénéfices » et « Bénéfice détaillé »)
 // ------------------------------------------------------------
-// Bénéfice net = CA
+// Bénéfice net = CA HT (prix TTC des réparations ramenés en HT selon les paramètres de la boutique)
 //              − coût des pièces consommées dans les dossiers (à leur coût d'achat)
 //              − commissions des réparateurs (calculées + validées)
 //              − dépenses réparation − dépenses diverses
-//              − achats HORS stock (lignes libres des factures d'achat validées)
+//              − achats HORS stock (lignes libres des factures d'achat validées, coût HT)
+// - Les pièces sont au coût HT de la facture d'achat (TVA récupérable).
 // - Une pièce achetée POUR LE STOCK compte quand elle est consommée dans un
 //   dossier, jamais à l'achat (sinon elle serait comptée deux fois).
 // - Une dépense rattachée à une famille est imputée à cette famille ;
@@ -1019,17 +1046,23 @@ const baseBenefice = async (from, to) => {
   const end = new Date(to + "T23:59:59.999Z");
 
   // 1. Réparations de la période (une ligne par réparation)
+  // ✅ PERFORMANCE : catégories / familles (petits référentiels) lues une fois et
+  //    associées en mémoire, au lieu de 2 jointures par réparation
+  const Categorie = require("../models/Categorie");
+  const FamilleModel = require("../models/Famille");
+  const [cats, fams] = await Promise.all([
+    Categorie.find().select("nom famille").lean(),
+    FamilleModel.find().select("nom").lean(),
+  ]);
+  const catMap = new Map(cats.map((c) => [String(c._id), c]));
+  const famMap = new Map(fams.map((x) => [String(x._id), x]));
+
   const reps = await Reparation.aggregate([
     { $match: match },
-    { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "cat" } },
-    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
-    { $lookup: { from: "familles", localField: "cat.famille", foreignField: "_id", as: "fam" } },
-    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
     {
       $project: {
-        familleId: "$fam._id",
-        famille: { $ifNull: ["$fam.nom", "Non classé"] },
-        categorie: { $ifNull: ["$cat.nom", "Sans catégorie"] },
+        boutique: 1,
+        categorieId: "$categorie",
         jour: dayExpr({ $ifNull: ["$dateReception", "$createdAt"] }),
         ca: getPrixTotalExpr(),
         encaisse: { $ifNull: ["$acompte", 0] },
@@ -1040,7 +1073,7 @@ const baseBenefice = async (from, to) => {
     },
     {
       $project: {
-        familleId: 1, famille: 1, categorie: 1, jour: 1, ca: 1, encaisse: 1,
+        boutique: 1, categorieId: 1, jour: 1, ca: 1, encaisse: 1,
         coutPieces: { $sum: { $map: { input: "$pieces", as: "p", in: { $ifNull: ["$$p.coutTotal", 0] } } } },
         piecesSansCout: {
           $size: { $filter: { input: "$pieces", as: "p", cond: { $eq: [{ $ifNull: ["$$p.coutTotal", null] }, null] } } },
@@ -1048,6 +1081,25 @@ const baseBenefice = async (from, to) => {
       },
     },
   ]);
+
+  for (const r of reps) {
+    const cat = r.categorieId ? catMap.get(String(r.categorieId)) : null;
+    const fam = cat?.famille ? famMap.get(String(cat.famille)) : null;
+    r.familleId = fam?._id;
+    r.famille = fam?.nom || "Non classé";
+    r.categorie = cat?.nom || "Sans catégorie";
+    delete r.categorieId;
+  }
+
+  // 1b. CA HT : chaque boutique dit si ses prix sont TTC et à quel taux de TVA
+  const { getParametres } = require("./atelierService");
+  const { toHT } = require("./commissionService");
+  const paramsBoutique = new Map();
+  for (const b of new Set(reps.map((r) => String(r.boutique)))) paramsBoutique.set(b, await getParametres(b));
+  for (const r of reps) {
+    r.caTTC = r.ca;
+    r.ca = toHT(paramsBoutique.get(String(r.boutique)), r.ca);
+  }
 
   // 2. Commissions rattachées à ces réparations (contre-écritures négatives incluses → nettes)
   const ids = reps.map((r) => r._id);
@@ -1081,7 +1133,8 @@ const baseBenefice = async (from, to) => {
     {
       $group: {
         _id: { famille: "$famille", jour: dayExpr("$dateDepense"), stock: { $ne: [{ $ifNull: ["$lignes.stock", null] }, null] } },
-        total: { $sum: { $ifNull: ["$lignes.montant", 0] } },
+        // coût HT (anciennes factures sans TVA : montant de la ligne)
+        total: { $sum: { $ifNull: ["$lignes.coutHT", { $ifNull: ["$lignes.montant", 0] }] } },
         count: { $sum: 1 },
       },
     },
@@ -1112,6 +1165,7 @@ const totauxBenefice = ({ reps, depenses }) => {
   const dep = (t) => sum(depenses.filter((d) => d.type === t), (d) => d.total);
   const t = {
     ca: sum(reps, (r) => r.ca),
+    caTTC: sum(reps, (r) => r.caTTC),
     encaisse: sum(reps, (r) => r.encaisse),
     nb: reps.length,
     coutPieces: sum(reps, (r) => r.coutPieces),
@@ -1195,6 +1249,8 @@ exports.getBenefice = async (from, to) => {
   // Top 5 réparations (prix)
   const topRentables = await Reparation.aggregate([
     { $match: buildMatch(from, to) },
+    { $sort: { prix: -1, numero: 1 } },
+    { $limit: 5 }, // ✅ jointures sur 5 lignes seulement (tri départagé par numéro)
     { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "cat" } },
     { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
     { $lookup: { from: "marques", localField: "marque", foreignField: "_id", as: "marque" } },
@@ -1234,7 +1290,9 @@ exports.getBenefice = async (from, to) => {
   const m2 = (n) => Math.round((n || 0) * 100) / 100;
   return {
     // ---- KPI principaux ----
-    ca_total: m2(t.ca),
+    ca_total: m2(t.ca), // HT
+    ca_ttc: m2(t.caTTC),
+    tva_collectee: m2(t.caTTC - t.ca),
     cout_pieces: m2(t.coutPieces),
     commissions: m2(t.commissions),
     depenses_reparation: m2(t.depReparation),
@@ -1280,9 +1338,9 @@ exports.getBeneficeFamilles = async (from, to) => {
   const base = await baseBenefice(from, to);
   const { reps, depenses, nomsFamilles } = base;
 
-  const vide = () => ({ nb: 0, ca: 0, encaisse: 0, cout_pieces: 0, commissions: 0, pieces_sans_cout: 0 });
+  const vide = () => ({ nb: 0, ca: 0, caTTC: 0, encaisse: 0, cout_pieces: 0, commissions: 0, pieces_sans_cout: 0 });
   const add = (acc, r) => {
-    acc.nb += 1; acc.ca += r.ca; acc.encaisse += r.encaisse;
+    acc.nb += 1; acc.ca += r.ca; acc.caTTC += r.caTTC; acc.encaisse += r.encaisse;
     acc.cout_pieces += r.coutPieces; acc.commissions += r.commissions; acc.pieces_sans_cout += r.piecesSansCout;
   };
   const videDep = () => ({ reparation: 0, diverse: 0, achats: 0 });
@@ -1326,7 +1384,7 @@ exports.getBeneficeFamilles = async (from, to) => {
       nb_reparations: x.nb,
       ca: r3(x.ca),
       encaisse: r3(x.encaisse),
-      reste: r3(Math.max(0, x.ca - x.encaisse)),
+      reste: r3(Math.max(0, x.caTTC - x.encaisse)), // encaissements TTC
       part_ca: Math.round(p * 1000) / 10,
       cout_pieces: r3(x.cout_pieces),
       commissions: r3(x.commissions),

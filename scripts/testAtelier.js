@@ -232,6 +232,22 @@ async function main() {
     const fx = await achat([{ stock: sav, quantite: 3, prixUnitaire: 100, remise: 30, fraisImputables: 6 }]);
     check('Ligne achat : remise et frais → coût de revient 92', fx.lignes[0].coutUnitaireRevient === 92 && fx.montant === 276, fx.lignes[0]);
     await api('POST', `/depenses/${fx._id}/validate`, o());
+
+    // ---------- TVA des factures d'achat : stock au coût HT, montant payé TTC ----------
+    {
+      const tvaH = (await api('POST', '/depenses', o({ body: { type: 'ACHAT', prixSaisis: 'HT', lignes: [{ stock: sav, quantite: 2, prixUnitaire: 50, tauxTVA: 19, fraisImputables: 4 }] } }))).body.data;
+      check('Achat prix HT + TVA 19 % : HT 104, TVA 19, TTC 123, coût u. 52',
+        tvaH.montantHT === 104 && tvaH.montantTVA === 19 && tvaH.montant === 123 && tvaH.lignes[0].coutUnitaireRevient === 52, tvaH);
+      const tvaT = (await api('POST', '/depenses', o({ body: { type: 'ACHAT', prixSaisis: 'TTC', lignes: [{ stock: sav, quantite: 1, prixUnitaire: 119, tauxTVA: 19 }] } }))).body.data;
+      check('Achat prix TTC 119 à 19 % : coût HT 100, TVA 19, payé 119',
+        tvaT.lignes[0].coutUnitaireRevient === 100 && tvaT.montantTVA === 19 && tvaT.montant === 119, tvaT);
+      const tvaL = (await api('POST', '/depenses', o({ body: { type: 'ACHAT', lignes: [{ stock: sav, quantite: 2, prixUnitaire: 119, prixSaisis: 'TTC', remise: 10, tauxTVA: 19 }] } }))).body.data;
+      check('Ligne en PU TTC 119 (facture HT), remise HT 10 : HT 190, TVA 36,1, TTC 226,1, coût u. 95',
+        tvaL.montantHT === 190 && tvaL.montantTVA === 36.1 && tvaL.montant === 226.1 && tvaL.lignes[0].coutUnitaireRevient === 95, tvaL);
+      const bad = await api('POST', '/depenses', o({ body: { type: 'ACHAT', lignes: [{ designation: 'x', quantite: 1, prixUnitaire: 1, tauxTVA: 150 }] } }));
+      check('Taux de TVA > 100 refusé', bad.status === 400, bad.body);
+      for (const d of [tvaH, tvaT, tvaL]) await api('DELETE', `/depenses/${d._id}`, o());
+    }
     r = await api('POST', `/depenses/${fx._id}/annuler`, o({ body: { motif: 'retour fournisseur' } }));
     const stx = (await api('GET', `/stock/${sav}/cout`, o())).body.data;
     check('Annulation achat : contre-écriture, stock à 0', r.status === 200 && r.body.data.statut === 'annulee', r.body);
@@ -410,6 +426,13 @@ async function main() {
       check('Consommation dans un dossier : coût des pièces + coût d\'achat de la pièce', near(b2.cout_pieces - b.cout_pieces, c1.cout?.total), [b.cout_pieces, b2.cout_pieces, c1.cout]);
       check('Consommation : bénéfice net −(coût pièce + nouvelle commission)',
         near(b2.benefice_net - b.benefice_net, -((b2.cout_pieces - b.cout_pieces) + (b2.commissions - b.commissions))), [b.benefice_net, b2.benefice_net]);
+
+      // CA en HT quand les prix de réparation sont TTC (paramètres de la boutique)
+      await api('PUT', '/atelier/parametres', o({ body: { prixTTC: true, tauxTVA: 19 } }));
+      const b3 = (await api('GET', '/statistiques/benefice' + qs, o())).body;
+      await api('PUT', '/atelier/parametres', o({ body: { prixTTC: false } }));
+      check('Prix TTC 19 % : CA du Bénéfice = TTC / 1,19 et TVA collectée affichée',
+        b3.ca_ttc > 0 && near(b3.ca_total, b3.ca_ttc / 1.19, 0.05) && near(b3.tva_collectee, b3.ca_ttc - b3.ca_total) && near(b3.ca_ttc, b2.ca_total), [b2.ca_total, b3.ca_ttc, b3.ca_total]);
     }
 
     // ---------- Rémunération au niveau de la SOCIÉTÉ (boutiques A + B) ----------
@@ -504,6 +527,37 @@ async function main() {
       await api('PATCH', `/reparations/${S.r1._id}/status`, o({ body: { status: stCours._id } }));
       const d3 = (await api('GET', '/dashboard/me', { token: tRep1, boutique: A })).body.data;
       check('Réouverture (« en cours ») → de nouveau « À traiter »', d3.aTraiter.some((x) => x.numero === S.r1.numero), d3.aTraiter.map((x) => x.numero));
+    }
+
+    // ---------- Commission sur main-d'œuvre ----------
+    {
+      const cs = req('src/services/commissionService');
+      const regleMO = { _id: 'mo', actif: true, validFrom: new Date(2000, 0, 1), typeCalcul: 'pourcentage', base: 'main_oeuvre', taux: 20 };
+      check('Règle main-d\'œuvre générale = niveau intervention (une fois par réparation)', cs.niveauRegle(regleMO) === 'intervention', cs.niveauRegle(regleMO));
+      check('Règle main-d\'œuvre sur un article (ancienne) reste au niveau article', cs.niveauRegle({ ...regleMO, article: 'x' }) === 'article');
+      const choisie = cs.resoudreRegle([regleMO], { reparateur: 'r', panne: 'ecran', date: new Date(), niveau: 'intervention' });
+      check('Règle main-d\'œuvre générale choisie pour une intervention', choisie === regleMO, choisie);
+      // Exemple : réparation 150 TTC (126,050 HT), écran vendu 80 TTC (67,227 HT) → MO 58,823 → 20 % = 11,765
+      const mo = Math.max(0, 126.05 - 67.227);
+      check('Exemple : 20 % × main-d\'œuvre 58,823 = 11,765', cs.calculerMontant(regleMO, { bases: { main_oeuvre: mo } }) === 11.765, cs.calculerMontant(regleMO, { bases: { main_oeuvre: mo } }));
+
+      r = await api('POST', '/remuneration/regles', o({ body: { nom: 'MO article', article: aff, typeCalcul: 'pourcentage', base: 'main_oeuvre', taux: 10, validFrom: from } }));
+      check('Main-d\'œuvre ciblant un article refusée (400)', r.status === 400, r.body);
+
+      // Parcours complet : réparateur dédié, règle générale 20 % main-d'œuvre, réparation 150 sans pièce → 30
+      const u = await api('POST', '/users', o({ body: { username: 'rep_mo_t', password: 'secret123', firstName: 'MO', lastName: 'T', role: 'REPARATEUR', boutiques: [A] } }));
+      const repMO = u.body.data?._id;
+      r = await api('POST', '/remuneration/regles', o({ body: { nom: 'MO 20 %', reparateur: repMO, typeCalcul: 'pourcentage', base: 'main_oeuvre', taux: 20, validFrom: from } }));
+      check('Règle générale 20 % main-d\'œuvre créée', r.status === 201, r.body);
+      const repMoDoc = await runAsSystem(() => Reparation.create({
+        organisation: S.r1.organisation, boutique: S.A._id, client: S.r1.client, categorie: S.cat._id, objet: S.obj._id, marque: S.mar._id,
+        panneType: ['Ecran'], status: S.r1.status, createdBy: S.owner._id, reparateur: repMO, prix: 150,
+      }));
+      await setCloture(repMoDoc._id);
+      await api('POST', '/remuneration/commissions/calculate', o({ body: range }));
+      r = await api('GET', '/remuneration/commissions?' + new URLSearchParams(range), o());
+      const comMO = r.body.data.find((c) => String(c.reparation?._id) === String(repMoDoc._id));
+      check('Réparation 150 sans pièce, 20 % main-d\'œuvre → 30 (avant : 0 / « aucune règle »)', comMO?.montant === 30 && comMO.sourceType === 'INTERVENTION', comMO);
     }
 
     // ---------- Rapports ----------

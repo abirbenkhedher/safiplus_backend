@@ -28,6 +28,14 @@ router.get(
   reparationController.getAll
 );
 
+// ✅ Alerte retards (header) : liste légère, filtrée par le serveur (avant /:id)
+router.get(
+  '/en-retard',
+  requireAuth,
+  requirePermission('reparations'),
+  reparationController.getEnRetard
+);
+
 router.get(
   '/:id',
   requireAuth,

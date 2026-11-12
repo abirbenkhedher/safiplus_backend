@@ -1,5 +1,7 @@
+const mongoose = require('mongoose');
 const Reparation = require('../models/Reparation');
 const Client = require('../models/Client');
+const { avecStats } = require('../services/clientStatsService');
 const User = require('../models/User');
 const History = require('../models/History');
 const excelService = require('../services/excelService');
@@ -123,22 +125,8 @@ exports.exportClients = async (req, res) => {
     if (isActive !== undefined) query.isActive = isActive === 'true';
     if (search) query.$text = { $search: search };
 
-    const clients = await Client.find(query).sort({ createdAt: -1 });
-
-    const clientsWithStats = await Promise.all(
-      clients.map(async (client) => {
-        const reparations = await Reparation.find({ client: client._id, isDeleted: false });
-        const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
-        const totalRestant = reparations.reduce((sum, r) => sum + (r.prix - r.acompte), 0);
-
-        return {
-          ...client.toObject(),
-          totalReparations: reparations.length,
-          totalPaye,
-          totalRestant,
-        };
-      })
-    );
+    const clients = await Client.find(query).sort({ createdAt: -1 }).lean();
+    const clientsWithStats = await avecStats(clients); // ✅ une seule requête
 
     const workbook = await excelService.exportClients(clientsWithStats);
     const filename = `clients_${new Date().toISOString().slice(0, 10)}.xlsx`;
@@ -166,29 +154,15 @@ exports.exportClientsPost = async (req, res) => {
       });
     }
 
-    const clientsWithStats = await Promise.all(
-      clients.map(async (client) => {
-        if (
-          client.totalReparations !== undefined &&
-          client.totalPaye !== undefined &&
-          client.totalRestant !== undefined
-        ) {
-          return client;
-        }
-
-        const clientId = client._id || client.id;
-        const reparations = await Reparation.find({ client: clientId, isDeleted: false });
-        const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
-        const totalRestant = reparations.reduce((sum, r) => sum + (r.prix - r.acompte), 0);
-
-        return {
-          ...client,
-          totalReparations: reparations.length,
-          totalPaye,
-          totalRestant,
-        };
-      })
-    );
+    // ✅ Statistiques manquantes calculées en une seule requête
+    const complets = (c) => c.totalReparations !== undefined && c.totalPaye !== undefined && c.totalRestant !== undefined;
+    const aCompleter = clients
+      .filter((c) => !complets(c))
+      .map((c) => ({ ...c, _id: c._id || c.id }))
+      .filter((c) => mongoose.isValidObjectId(c._id));
+    const completes = new Map((await avecStats(aCompleter.map((c) => ({ ...c, _id: new mongoose.Types.ObjectId(String(c._id)) }))))
+      .map((c) => [String(c._id), c]));
+    const clientsWithStats = clients.map((c) => (complets(c) ? c : completes.get(String(c._id || c.id)) || c));
 
     const workbook = await excelService.exportClients(clientsWithStats, filters || {});
     const filename = `clients_${new Date().toISOString().slice(0, 10)}.xlsx`;

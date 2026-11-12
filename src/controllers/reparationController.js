@@ -256,6 +256,46 @@ async function restaurerStockPourReparation(reparation, userId, motif) {
 }
 
 // ============================================================
+// ✅ GET /reparations/en-retard — alerte du header
+// Réparations au statut « en cours » reçues depuis plus de N heures (défaut 48).
+// Liste légère (quelques champs) : l'ancien chargement complet des réparations
+// en cours pesait des dizaines de Mo avec beaucoup de dossiers.
+// ============================================================
+exports.getEnRetard = async (req, res) => {
+  try {
+    const heures = Math.min(Math.max(parseInt(req.query.heures, 10) || 48, 1), 24 * 365);
+    const limite = new Date(Date.now() - heures * 3600 * 1000);
+    const statuts = await Status.find({ label: /cours/i }).select('_id').lean();
+    if (statuts.length === 0) return res.json({ success: true, data: [], total: 0 });
+
+    const query = {
+      isDeleted: false,
+      status: { $in: statuts.map((s) => s._id) },
+      $or: [
+        { dateReception: { $lte: limite } },
+        { dateReception: null, createdAt: { $lte: limite } },
+      ],
+    };
+    const [data, total] = await Promise.all([
+      Reparation.find(query)
+        .select('numero client marque modele status dateReception createdAt')
+        .populate('client', 'nom')
+        .populate('marque', 'nom')
+        .populate('modele', 'nom')
+        .populate('status', 'label')
+        .sort({ dateReception: 1, createdAt: 1 })
+        .limit(500)
+        .lean(),
+      Reparation.countDocuments(query),
+    ]);
+    res.json({ success: true, data, total, heures });
+  } catch (error) {
+    logger.error('Erreur getEnRetard:', error);
+    res.status(500).json({ success: false, message: 'Erreur lors de la recherche des retards' });
+  }
+};
+
+// ============================================================
 // GET - Liste paginée OPTIMISÉE
 // ============================================================
 exports.getAll = async (req, res) => {

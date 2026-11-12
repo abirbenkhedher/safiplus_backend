@@ -1,5 +1,6 @@
 const XLSX = require('xlsx');
 const Client = require('../models/Client');
+const { avecStats } = require('../services/clientStatsService');
 const Reparation = require('../models/Reparation');
 const logger = require('../config/logger');
 
@@ -432,35 +433,9 @@ exports.getAll = async (req, res) => {
       Client.countDocuments(query),
     ]);
 
-    const clientsWithStats = await Promise.all(
-      clients.map(async (client) => {
-        const reparations = await Reparation.find({
-          client: client._id,
-          isDeleted: false,
-        }).lean();
-
-        const totalPaye = reparations.reduce(
-          (sum, r) => sum + (r.acompte || 0),
-          0
-        );
-        const totalRestant = reparations.reduce(
-          (sum, r) => sum + ((r.prix || 0) - (r.acompte || 0)),
-          0
-        );
-        const lastReparation =
-          reparations.length > 0
-            ? reparations[reparations.length - 1]
-            : null;
-
-        return {
-          ...client,
-          totalReparations: reparations.length,
-          totalPaye,
-          totalRestant,
-          lastReparation: lastReparation?.createdAt || null,
-        };
-      })
-    );
+    // ✅ Statistiques en une seule requête ; stats=0 (sélecteur du formulaire de
+    //    réparation) : pas de statistiques du tout
+    const clientsWithStats = String(req.query.stats) === '0' ? clients : await avecStats(clients);
 
     res.json({
       success: true,
@@ -777,18 +752,19 @@ exports.findByPhone = async (req, res) => {
       });
     }
 
-    const clients = await Client.find({});
-    const foundClient = clients.find((c) => {
-      const cPhone = (c.phone || '').replace(/[^0-9]/g, '');
-      const cPhone2 = (c.phone2 || '').replace(/[^0-9]/g, '');
-      if (cPhone === DEFAULT_PHONE) return false;
-      return (
-        cPhone.includes(cleanPhone) ||
-        cleanPhone.includes(cPhone) ||
-        (cPhone2 &&
-          (cPhone2.includes(cleanPhone) || cleanPhone.includes(cPhone2)))
-      );
-    });
+    // ✅ Recherche faite par la base (avant : tous les clients chargés en mémoire).
+    //    Ordre : numéro exact, puis numéro contenant la saisie, puis numéro contenu dans la saisie.
+    const notPassenger = { phone: { $ne: DEFAULT_PHONE } };
+    const sousChaines = [];
+    for (let len = 6; len < cleanPhone.length; len += 1) {
+      for (let i = 0; i + len <= cleanPhone.length; i += 1) sousChaines.push(cleanPhone.slice(i, i + len));
+    }
+    const foundClient =
+      (await Client.findOne({ ...notPassenger, $or: [{ phone: cleanPhone }, { phone2: cleanPhone }] })) ||
+      (await Client.findOne({ ...notPassenger, $or: [{ phone: { $regex: cleanPhone } }, { phone2: { $regex: cleanPhone } }] })) ||
+      (sousChaines.length
+        ? await Client.findOne({ ...notPassenger, $or: [{ phone: { $in: sousChaines } }, { phone2: { $in: sousChaines } }] })
+        : null);
 
     if (foundClient) {
       return res.json({ success: true, data: foundClient, exists: true });

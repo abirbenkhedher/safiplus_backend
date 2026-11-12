@@ -36,6 +36,18 @@ const porteeFilter = (portee) => {
   return {};
 };
 
+// ✅ TVA d'une ligne d'achat (0 à 100 %) et mode de saisie des prix (HT / TTC)
+const tauxTVA = (v) => {
+  const t = Number(v ?? 0);
+  if (!(t >= 0 && t <= 100)) throw new AppError('Taux de TVA invalide sur une ligne');
+  return t;
+};
+const prixSaisis = (v) => {
+  if (v === undefined || v === null || v === '') return 'HT';
+  if (!['HT', 'TTC'].includes(v)) throw new AppError('Prix saisis : HT ou TTC');
+  return v;
+};
+
 /** Normalise les lignes d'une facture d'achat (montants recalculés par le modèle). */
 const parseLignes = async (lignes) => {
   if (!Array.isArray(lignes) || lignes.length === 0) {
@@ -58,6 +70,8 @@ const parseLignes = async (lignes) => {
     out.push({
       stock: l.stock || null, designation, quantite, prixUnitaire,
       remise: Number(l.remise) || 0, fraisImputables: Number(l.fraisImputables) || 0,
+      tauxTVA: tauxTVA(l.tauxTVA),
+      prixSaisis: l.prixSaisis ? prixSaisis(l.prixSaisis) : null,
     });
   }
   return out;
@@ -220,7 +234,10 @@ exports.create = async (req, res) => {
     famille: await checkFamille(famille),
     createdBy: req.user.id,
   };
-  if (type === 'ACHAT') doc.lignes = await parseLignes(lignes);
+  if (type === 'ACHAT') {
+    doc.lignes = await parseLignes(lignes);
+    doc.prixSaisis = prixSaisis(req.body.prixSaisis);
+  }
   // Boutique choisie dans le formulaire (vue globale) — contrôlée par le plugin tenant
   if (!administrative && req.body.boutique) doc.boutique = req.body.boutique;
 
@@ -254,6 +271,7 @@ exports.update = async (req, res) => {
   const before = depense.toObject();
   allowed.forEach((k) => { if (req.body[k] !== undefined) depense[k] = req.body[k]; });
   if (depense.type === 'ACHAT' && req.body.lignes !== undefined) depense.lignes = await parseLignes(req.body.lignes);
+  if (depense.type === 'ACHAT' && req.body.prixSaisis !== undefined) depense.prixSaisis = prixSaisis(req.body.prixSaisis);
 
   await depense.save();
   await logAction({

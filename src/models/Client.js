@@ -133,6 +133,10 @@ clientSchema.index(
   { unique: true, partialFilterExpression: { codeFidelite: { $type: 'string' } } }
 );
 
+// ✅ Recherche par téléphone (formulaire de réparation, doublons)
+clientSchema.index({ organisation: 1, phone: 1 });
+clientSchema.index({ organisation: 1, phone2: 1 });
+
 clientSchema.index({
   nom: 'text',
   phone: 'text',

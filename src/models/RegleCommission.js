@@ -54,6 +54,10 @@ regleSchema.pre('validate', function () {
   if (this.typeCalcul === 'forfait_intervention' && (this.article || this.categorie || this.typeArticle)) {
     this.invalidate('typeCalcul', 'Un forfait par intervention cible une panne/intervention ou est général');
   }
+  if (this.base === 'main_oeuvre' && ['pourcentage', 'palier'].includes(this.typeCalcul)
+    && (this.article || this.categorie || this.typeArticle)) {
+    this.invalidate('base', "La main-d'œuvre se calcule sur la réparation : choisissez une intervention / panne ou une règle générale");
+  }
   if (this.typeCalcul === 'palier' && (!this.paliers || this.paliers.length === 0)) {
     this.invalidate('paliers', 'Au moins un palier est requis');
   }

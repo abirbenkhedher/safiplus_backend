@@ -503,6 +503,8 @@ reparationSchema.pre('validate', function () {
 
 // ✅ Index composés pour pagination + filtres (les plus utilisés)
 reparationSchema.index({ boutique: 1, isDeleted: 1, createdAt: -1 });
+// ✅ Statistiques par période (filtre dateReception, à défaut createdAt)
+reparationSchema.index({ boutique: 1, isDeleted: 1, dateReception: 1, createdAt: 1 });
 reparationSchema.index({ isDeleted: 1, createdAt: -1 });
 reparationSchema.index({ isDeleted: 1, status: 1 });
 reparationSchema.index({ isDeleted: 1, categorie: 1 });

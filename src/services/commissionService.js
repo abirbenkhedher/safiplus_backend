@@ -32,7 +32,15 @@ const NIVEAUX = {
   2: 'categorie', 1: 'reparateur', 0: 'generale',
 };
 
-const niveauRegle = (r) => (r.typeCalcul === 'forfait_intervention' || r.panne ? 'intervention' : 'article');
+// ✅ Une règle « main-d'œuvre » porte sur la réparation (une fois par dossier), même
+//    sans panne choisie : appliquée aux pièces, sa base vaudrait toujours 0.
+//    (une ancienne règle main-d'œuvre ciblant un article reste au niveau article)
+const niveauRegle = (r) => {
+  if (r.typeCalcul === 'forfait_intervention' || r.panne) return 'intervention';
+  if (r.base === 'main_oeuvre' && ['pourcentage', 'palier'].includes(r.typeCalcul)
+    && !r.article && !r.categorie && !r.typeArticle) return 'intervention';
+  return 'article';
+};
 
 const specificite = (r) => {
   let t = 0;
