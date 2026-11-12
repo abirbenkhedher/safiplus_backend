@@ -7,7 +7,7 @@ const historySchema = new mongoose.Schema({
     enum: [
       'Reparation', 'Client', 'User', 'Status', 'Famille', 'Categorie', 'Objet',
       // ✅ Module atelier (cahier des charges)
-      'Depense', 'Stock', 'Fournisseur', 'ParametresAtelier', 'DeclarationJournaliere',
+      'Depense', 'Stock', 'Fournisseur', 'ParametresAtelier',
       'RegleCommission', 'ContratReparateur', 'Commission', 'EcritureRemuneration',
       'PaiementReparateur', 'Cloture',
     ],

@@ -994,228 +994,215 @@ exports.getStatuts = async (from, to) => {
 // 7. BÉNÉFICE (Rentabilité : CA - Dépenses)
 // ============================================================
 
-exports.getBenefice = async (from, to) => {
-  const match = buildMatch(from, to);
-  const prixTotalExpr = getPrixTotalExpr();
+// ============================================================
+// ✅ BASE COMMUNE DU BÉNÉFICE (onglets « Bénéfices » et « Bénéfice détaillé »)
+// ------------------------------------------------------------
+// Bénéfice net = CA
+//              − coût des pièces consommées dans les dossiers (à leur coût d'achat)
+//              − commissions des réparateurs (calculées + validées)
+//              − dépenses réparation − dépenses diverses
+//              − achats HORS stock (lignes libres des factures d'achat validées)
+// - Une pièce achetée POUR LE STOCK compte quand elle est consommée dans un
+//   dossier, jamais à l'achat (sinon elle serait comptée deux fois).
+// - Une dépense rattachée à une famille est imputée à cette famille ;
+//   sans famille elle est « générale » (répartie au prorata du CA).
+// ============================================================
+const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+const pct = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);
+const SANS_FAMILLE = "__sans_famille__";
+const dayExpr = (field) => ({ $dateToString: { format: "%Y-%m-%d", date: field } });
 
+const baseBenefice = async (from, to) => {
+  const Commission = require("../models/Commission");
+  const match = buildMatch(from, to);
   const start = new Date(from);
   const end = new Date(to + "T23:59:59.999Z");
-  const matchDepense = {
-    isDeleted: false,
-    statut: { $ne: "annulee" }, // une dépense annulée ne compte pas
-    type: { $in: ["REPARATION", "DIVERSE"] }, // achats de stock : via les consommations
-    dateDepense: { $gte: start, $lte: end },
-  };
 
-  // ----------------------------------------------------------
-  // 1. CA et nb réparations
-  // ----------------------------------------------------------
-  const caAgg = await Reparation.aggregate([
+  // 1. Réparations de la période (une ligne par réparation)
+  const reps = await Reparation.aggregate([
     { $match: match },
+    { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "cat" } },
+    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: "familles", localField: "cat.famille", foreignField: "_id", as: "fam" } },
+    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
     {
-      $group: {
-        _id: null,
-        ca_total: { $sum: prixTotalExpr },
-        encaissements: { $sum: { $ifNull: ["$acompte", 0] } },
-        nb_reparations: { $sum: 1 },
+      $project: {
+        familleId: "$fam._id",
+        famille: { $ifNull: ["$fam.nom", "Non classé"] },
+        categorie: { $ifNull: ["$cat.nom", "Sans catégorie"] },
+        jour: dayExpr({ $ifNull: ["$dateReception", "$createdAt"] }),
+        ca: getPrixTotalExpr(),
+        encaisse: { $ifNull: ["$acompte", 0] },
+        pieces: {
+          $filter: { input: { $ifNull: ["$piecesStock", []] }, as: "p", cond: { $eq: ["$$p.statut", "consomme"] } },
+        },
+      },
+    },
+    {
+      $project: {
+        familleId: 1, famille: 1, categorie: 1, jour: 1, ca: 1, encaisse: 1,
+        coutPieces: { $sum: { $map: { input: "$pieces", as: "p", in: { $ifNull: ["$$p.coutTotal", 0] } } } },
+        piecesSansCout: {
+          $size: { $filter: { input: "$pieces", as: "p", cond: { $eq: [{ $ifNull: ["$$p.coutTotal", null] }, null] } } },
+        },
       },
     },
   ]);
-  const caData = caAgg[0] || { ca_total: 0, encaissements: 0, nb_reparations: 0 };
 
-  // ----------------------------------------------------------
-  // 2. Dépenses (réparation + diverse)
-  // ----------------------------------------------------------
+  // 2. Commissions rattachées à ces réparations (contre-écritures négatives incluses → nettes)
+  const ids = reps.map((r) => r._id);
+  const comAgg = ids.length
+    ? await Commission.aggregate([
+        { $match: { reparation: { $in: ids }, statut: { $in: ["calculee", "validee"] } } },
+        { $group: { _id: "$reparation", c: { $sum: "$montant" } } },
+      ])
+    : [];
+  const comMap = new Map(comAgg.map((d) => [String(d._id), d.c]));
+  for (const r of reps) {
+    r.cle = r.familleId ? String(r.familleId) : SANS_FAMILLE;
+    r.commissions = comMap.get(String(r._id)) || 0;
+  }
+
+  // 3. Dépenses réparation / diverses (par famille, type et jour)
   const depAgg = await Depense.aggregate([
-    { $match: matchDepense },
+    {
+      $match: {
+        isDeleted: false, statut: { $ne: "annulee" },
+        type: { $in: ["REPARATION", "DIVERSE"] }, dateDepense: { $gte: start, $lte: end },
+      },
+    },
+    { $group: { _id: { famille: "$famille", type: "$type", jour: dayExpr("$dateDepense") }, total: { $sum: "$montant" }, count: { $sum: 1 } } },
+  ]);
+
+  // 4. Factures d'achat validées : lignes hors stock = dépense ; lignes stock = information
+  const achAgg = await Depense.aggregate([
+    { $match: { isDeleted: false, type: "ACHAT", statut: "validee", dateDepense: { $gte: start, $lte: end } } },
+    { $unwind: "$lignes" },
     {
       $group: {
-        _id: "$type",
-        total: { $sum: "$montant" },
+        _id: { famille: "$famille", jour: dayExpr("$dateDepense"), stock: { $ne: [{ $ifNull: ["$lignes.stock", null] }, null] } },
+        total: { $sum: { $ifNull: ["$lignes.montant", 0] } },
         count: { $sum: 1 },
       },
     },
   ]);
 
-  const depReparation = depAgg.find((d) => d._id === "REPARATION")?.total || 0;
-  const depDiverse = depAgg.find((d) => d._id === "DIVERSE")?.total || 0;
-  const nbDepReparation = depAgg.find((d) => d._id === "REPARATION")?.count || 0;
-  const nbDepDiverse = depAgg.find((d) => d._id === "DIVERSE")?.count || 0;
+  const depenses = [
+    ...depAgg.map((d) => ({ cle: d._id.famille ? String(d._id.famille) : null, type: d._id.type, jour: d._id.jour, total: d.total, count: d.count })),
+    ...achAgg.filter((a) => !a._id.stock)
+      .map((a) => ({ cle: a._id.famille ? String(a._id.famille) : null, type: "ACHAT_HORS_STOCK", jour: a._id.jour, total: a.total, count: a.count })),
+  ];
+  const achatsStock = achAgg.filter((a) => a._id.stock).reduce((s, a) => s + a.total, 0);
 
-  const depenses_total = depReparation + depDiverse;
+  // Noms des familles citées par des dépenses (même sans réparation sur la période)
+  const Famille = require("../models/Famille");
+  const nomsFamilles = new Map(reps.filter((r) => r.familleId).map((r) => [r.cle, r.famille]));
+  const manquantes = [...new Set(depenses.map((d) => d.cle).filter((c) => c && !nomsFamilles.has(c)))];
+  if (manquantes.length) {
+    const fams = await Famille.find({ _id: { $in: manquantes } }).select("nom").lean();
+    fams.forEach((f) => nomsFamilles.set(String(f._id), f.nom));
+  }
 
-  // ----------------------------------------------------------
-  // 3. Calculs de bénéfice
-  // ----------------------------------------------------------
-  const marge_brute = caData.ca_total - depReparation;
-  const benefice_net = caData.ca_total - depenses_total;
+  return { reps, depenses, achatsStock, nomsFamilles };
+};
 
-  const taux_marge_brute =
-    caData.ca_total > 0 ? (marge_brute / caData.ca_total) * 100 : 0;
-  const taux_marge_nette =
-    caData.ca_total > 0 ? (benefice_net / caData.ca_total) * 100 : 0;
+/** Totaux d'une base (période complète). */
+const totauxBenefice = ({ reps, depenses }) => {
+  const sum = (arr, f) => arr.reduce((s, x) => s + (f(x) || 0), 0);
+  const dep = (t) => sum(depenses.filter((d) => d.type === t), (d) => d.total);
+  const t = {
+    ca: sum(reps, (r) => r.ca),
+    encaisse: sum(reps, (r) => r.encaisse),
+    nb: reps.length,
+    coutPieces: sum(reps, (r) => r.coutPieces),
+    commissions: sum(reps, (r) => r.commissions),
+    depReparation: dep("REPARATION"),
+    depDiverse: dep("DIVERSE"),
+    achatsHorsStock: dep("ACHAT_HORS_STOCK"),
+    nbDepReparation: sum(depenses.filter((d) => d.type === "REPARATION"), (d) => d.count),
+    nbDepDiverse: sum(depenses.filter((d) => d.type === "DIVERSE"), (d) => d.count),
+  };
+  t.coutsDirects = t.coutPieces + t.commissions + t.depReparation + t.achatsHorsStock;
+  t.margeBrute = t.ca - t.coutsDirects;
+  t.beneficeNet = t.margeBrute - t.depDiverse;
+  t.depensesTotal = t.depReparation + t.depDiverse + t.achatsHorsStock;
+  return t;
+};
 
-  const panier_moyen =
-    caData.nb_reparations > 0 ? caData.ca_total / caData.nb_reparations : 0;
-  const cout_moyen_reparation =
-    caData.nb_reparations > 0 ? depReparation / caData.nb_reparations : 0;
+exports.getBenefice = async (from, to) => {
+  const base = await baseBenefice(from, to);
+  const t = totauxBenefice(base);
+  const { reps, depenses, nomsFamilles } = base;
+  const nomFamille = (cle) => (cle && cle !== SANS_FAMILLE ? nomsFamilles.get(cle) || "Famille supprimée" : cle === SANS_FAMILLE ? "Non classé" : "Générale (toutes familles)");
 
-  // ----------------------------------------------------------
-  // 4. Période précédente pour variations
-  // ----------------------------------------------------------
+  // Période précédente (même calcul) pour les variations
   const prevDates = getPreviousPeriod(from, to);
-  const prevMatch = buildMatch(prevDates.from, prevDates.to);
-  const prevStart = new Date(prevDates.from);
-  const prevEnd = new Date(prevDates.to + "T23:59:59.999Z");
-
-  const prevCaAgg = await Reparation.aggregate([
-    { $match: prevMatch },
-    { $group: { _id: null, ca_total: { $sum: prixTotalExpr } } },
-  ]);
-  const prevCa = prevCaAgg[0]?.ca_total || 0;
-
-  const prevDepAgg = await Depense.aggregate([
-    {
-      $match: {
-        isDeleted: false,
-        statut: { $ne: "annulee" },
-        type: { $in: ["REPARATION", "DIVERSE"] },
-        dateDepense: { $gte: prevStart, $lte: prevEnd },
-      },
-    },
-    { $group: { _id: null, total: { $sum: "$montant" } } },
-  ]);
-  const prevDep = prevDepAgg[0]?.total || 0;
-  const prevBenefice = prevCa - prevDep;
-
+  const prev = totauxBenefice(await baseBenefice(prevDates.from, prevDates.to));
   const variations = {
-    ca_total: calcVariation(caData.ca_total, prevCa),
-    depenses_total: calcVariation(depenses_total, prevDep),
-    benefice_net: calcVariation(benefice_net, prevBenefice),
+    ca_total: calcVariation(t.ca, prev.ca),
+    depenses_total: calcVariation(t.coutsDirects + t.depDiverse, prev.coutsDirects + prev.depDiverse),
+    benefice_net: calcVariation(t.beneficeNet, prev.beneficeNet),
   };
 
-  // ----------------------------------------------------------
-  // 5. Évolution journalière (CA / Dépenses / Bénéfice)
-  // ----------------------------------------------------------
-  const evoCA = await Reparation.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: {
-          $dateToString: {
-            format: "%Y-%m-%d",
-            date: { $ifNull: ["$dateReception", "$createdAt"] },
-          },
-        },
-        ca: { $sum: prixTotalExpr },
-      },
-    },
-    { $sort: { _id: 1 } },
-  ]);
-
-  const evoDep = await Depense.aggregate([
-    { $match: matchDepense },
-    {
-      $group: {
-        _id: {
-          $dateToString: { format: "%Y-%m-%d", date: "$dateDepense" },
-        },
-        dep: { $sum: "$montant" },
-      },
-    },
-    { $sort: { _id: 1 } },
-  ]);
-
-  // Fusion par date
+  // Évolution journalière : « dépenses » = tous les coûts (pièces, commissions, dépenses, achats hors stock)
   const evoMap = {};
-  evoCA.forEach((r) => {
-    evoMap[r._id] = { date: r._id, ca: r.ca, dep: 0 };
-  });
-  evoDep.forEach((r) => {
-    if (!evoMap[r._id]) evoMap[r._id] = { date: r._id, ca: 0, dep: 0 };
-    evoMap[r._id].dep = r.dep;
-  });
-
+  const jourRow = (j) => (evoMap[j] = evoMap[j] || { date: j, ca: 0, couts: 0 });
+  for (const r of reps) {
+    const row = jourRow(r.jour);
+    row.ca += r.ca;
+    row.couts += r.coutPieces + r.commissions;
+  }
+  for (const d of depenses) jourRow(d.jour).couts += d.total;
   const evolution = Object.values(evoMap)
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((d) => ({
       date: d.date,
       ca: Math.round(d.ca * 100) / 100,
-      depenses: Math.round(d.dep * 100) / 100,
-      benefice: Math.round((d.ca - d.dep) * 100) / 100,
+      depenses: Math.round(d.couts * 100) / 100,
+      benefice: Math.round((d.ca - d.couts) * 100) / 100,
     }));
 
-  // ----------------------------------------------------------
-  // 6. Marge par famille (CA - dépenses liées)
-  // ----------------------------------------------------------
-  const margeFamille = await Reparation.aggregate([
-    { $match: match },
-    {
-      $lookup: {
-        from: "categories",
-        localField: "categorie",
-        foreignField: "_id",
-        as: "cat",
-      },
-    },
-    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: "familles",
-        localField: "cat.famille",
-        foreignField: "_id",
-        as: "fam",
-      },
-    },
-    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
-    {
-      $group: {
-        _id: { $ifNull: ["$fam.nom", "Non classé"] },
-        ca: { $sum: prixTotalExpr },
-        nb: { $sum: 1 },
-      },
-    },
-    { $sort: { ca: -1 } },
-    {
-      $project: {
-        _id: 0,
-        famille: "$_id",
-        ca: 1,
-        nb_reparations: "$nb",
-      },
-    },
-  ]);
+  // Marge par famille (coûts directs de la famille ; les dépenses générales ne sont pas réparties ici)
+  const famMap = new Map();
+  const famRow = (cle, nom) => {
+    if (!famMap.has(cle)) famMap.set(cle, { famille: nom, ca: 0, nb_reparations: 0, cout_pieces: 0, commissions: 0, depenses_directes: 0 });
+    return famMap.get(cle);
+  };
+  for (const r of reps) {
+    const f = famRow(r.cle, r.famille);
+    f.ca += r.ca; f.nb_reparations += 1; f.cout_pieces += r.coutPieces; f.commissions += r.commissions;
+  }
+  for (const d of depenses.filter((x) => x.cle)) famRow(d.cle, nomFamille(d.cle)).depenses_directes += d.total;
+  const margeFamille = [...famMap.values()]
+    .map((f) => ({ ...f, ca: r3(f.ca), cout_pieces: r3(f.cout_pieces), commissions: r3(f.commissions), depenses_directes: r3(f.depenses_directes), marge: r3(f.ca - f.cout_pieces - f.commissions - f.depenses_directes) }))
+    .sort((a, b) => b.ca - a.ca);
 
-  // ----------------------------------------------------------
-  // 7. Top 5 réparations les plus rentables
-  // ----------------------------------------------------------
+  // Dépenses par famille (réparation + diverses + achats hors stock)
+  const parFam = new Map();
+  for (const d of depenses) {
+    const cle = d.cle || "";
+    if (!parFam.has(cle)) parFam.set(cle, { famille: nomFamille(d.cle), generale: !d.cle, reparation: 0, diverse: 0, achats_hors_stock: 0, total: 0 });
+    const row = parFam.get(cle);
+    if (d.type === "REPARATION") row.reparation += d.total;
+    else if (d.type === "DIVERSE") row.diverse += d.total;
+    else row.achats_hors_stock += d.total;
+    row.total += d.total;
+  }
+  const depensesParFamille = [...parFam.values()]
+    .map((x) => ({ ...x, reparation: r3(x.reparation), diverse: r3(x.diverse), achats_hors_stock: r3(x.achats_hors_stock), total: r3(x.total) }))
+    .sort((a, b) => b.total - a.total);
+
+  // Top 5 réparations (prix)
   const topRentables = await Reparation.aggregate([
-    { $match: match },
-    {
-      $lookup: {
-        from: "categories",
-        localField: "categorie",
-        foreignField: "_id",
-        as: "cat",
-      },
-    },
+    { $match: buildMatch(from, to) },
+    { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "cat" } },
     { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: "marques",
-        localField: "marque",
-        foreignField: "_id",
-        as: "marque",
-      },
-    },
+    { $lookup: { from: "marques", localField: "marque", foreignField: "_id", as: "marque" } },
     { $unwind: { path: "$marque", preserveNullAndEmptyArrays: true } },
     {
       $project: {
-        _id: 0,
-        numero: 1,
-        prix: { $ifNull: ["$prix", 0] },
-        categorie: { $ifNull: ["$cat.nom", "—"] },
-        marque: { $ifNull: ["$marque.nom", "—"] },
+        _id: 0, numero: 1, prix: { $ifNull: ["$prix", 0] },
+        categorie: { $ifNull: ["$cat.nom", "—"] }, marque: { $ifNull: ["$marque.nom", "—"] },
         date: { $ifNull: ["$dateReception", "$createdAt"] },
       },
     },
@@ -1223,18 +1210,17 @@ exports.getBenefice = async (from, to) => {
     { $limit: 5 },
   ]);
 
-  // ----------------------------------------------------------
-  // 8. ✅ NOUVEAU : Top 5 dépenses (les plus grosses)
-  // ----------------------------------------------------------
+  // Top 5 dépenses (réparation + diverses), avec la famille
+  const start = new Date(from);
+  const end = new Date(to + "T23:59:59.999Z");
   const topDepenses = await Depense.aggregate([
-    { $match: matchDepense },
+    { $match: { isDeleted: false, statut: { $ne: "annulee" }, type: { $in: ["REPARATION", "DIVERSE"] }, dateDepense: { $gte: start, $lte: end } } },
+    { $lookup: { from: "familles", localField: "famille", foreignField: "_id", as: "fam" } },
+    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
     {
       $project: {
-        _id: 0,
-        numero: 1,
-        montant: 1,
-        type: 1,
-        dateDepense: 1,
+        _id: 0, numero: 1, montant: 1, type: 1, dateDepense: 1,
+        famille: { $ifNull: ["$fam.nom", ""] },
         fournisseur: { $ifNull: ["$fournisseur", "—"] },
         categorieDiverse: { $ifNull: ["$categorieDiverse", "—"] },
         motifDiverse: { $ifNull: ["$motifDiverse", ""] },
@@ -1245,173 +1231,97 @@ exports.getBenefice = async (from, to) => {
     { $limit: 5 },
   ]);
 
-  // ----------------------------------------------------------
-  // ✅ RETOUR
-  // ----------------------------------------------------------
+  const m2 = (n) => Math.round((n || 0) * 100) / 100;
   return {
     // ---- KPI principaux ----
-    ca_total: Math.round(caData.ca_total * 100) / 100,
-    depenses_total: Math.round(depenses_total * 100) / 100,
-    depenses_reparation: Math.round(depReparation * 100) / 100,
-    depenses_diverse: Math.round(depDiverse * 100) / 100,
-    nb_dep_reparation: nbDepReparation,
-    nb_dep_diverse: nbDepDiverse,
+    ca_total: m2(t.ca),
+    cout_pieces: m2(t.coutPieces),
+    commissions: m2(t.commissions),
+    depenses_reparation: m2(t.depReparation),
+    depenses_diverse: m2(t.depDiverse),
+    achats_hors_stock: m2(t.achatsHorsStock),
+    achats_stock_periode: m2(base.achatsStock), // information : comptés via les pièces consommées
+    depenses_total: m2(t.depensesTotal),
+    couts_directs: m2(t.coutsDirects),
+    nb_dep_reparation: t.nbDepReparation,
+    nb_dep_diverse: t.nbDepDiverse,
 
-    marge_brute: Math.round(marge_brute * 100) / 100,
-    benefice_net: Math.round(benefice_net * 100) / 100,
+    marge_brute: m2(t.margeBrute),
+    benefice_net: m2(t.beneficeNet),
+    taux_marge_brute: t.ca > 0 ? Math.round((t.margeBrute / t.ca) * 1000) / 10 : 0,
+    taux_marge_nette: t.ca > 0 ? Math.round((t.beneficeNet / t.ca) * 1000) / 10 : 0,
 
-    taux_marge_brute: Math.round(taux_marge_brute * 10) / 10,
-    taux_marge_nette: Math.round(taux_marge_nette * 10) / 10,
+    panier_moyen: t.nb > 0 ? m2(t.ca / t.nb) : 0,
+    cout_moyen_reparation: t.nb > 0 ? m2(t.coutsDirects / t.nb) : 0,
+    nb_reparations: t.nb,
+    encaissements: m2(t.encaisse),
 
-    panier_moyen: Math.round(panier_moyen * 100) / 100,
-    cout_moyen_reparation: Math.round(cout_moyen_reparation * 100) / 100,
-    nb_reparations: caData.nb_reparations,
-    encaissements: Math.round(caData.encaissements * 100) / 100,
-
-    // ---- Variations ----
     variations,
-
-    // ---- Graphiques ----
     evolution,
     marge_par_famille: margeFamille,
+    depenses_par_famille: depensesParFamille,
     top_rentables: topRentables,
-    top_depenses: topDepenses, // ✅ NOUVEAU
+    top_depenses: topDepenses,
   };
 };
+
 // ============================================================
 // 8. ✅ BÉNÉFICE DÉTAILLÉ PAR FAMILLE (et par catégorie)
 // ------------------------------------------------------------
-// Même base que l'onglet Bénéfices (réparations reçues sur la période,
-// prix TTC + imprévus acceptés ; dépenses réparation + diverses).
-//
+// Même base et même total que l'onglet Bénéfices (baseBenefice).
 // Par famille :
-//  - Données DIRECTES (propres aux réparations de la famille) :
-//      CA, encaissé, reste, coût réel des pièces consommées (dossier +
-//      déclarations rattachées), commissions → marge directe.
-//  - Dépenses réparation / diverses : non rattachées à une réparation →
-//      réparties au prorata du CA (au nombre de réparations si CA = 0).
-//      Bénéfice = CA − quote-part des dépenses. La somme des familles
-//      est égale au bénéfice net de l'onglet Bénéfices.
+//   marge directe = CA − coût des pièces − commissions
+//   bénéfice      = marge directe − dépenses DE LA FAMILLE − quote-part des
+//                   dépenses GÉNÉRALES (sans famille, au prorata du CA)
+// Dans une famille, ses dépenses propres sont réparties entre ses catégories
+// au prorata de leur CA. Somme des familles = bénéfice net de l'onglet Bénéfices.
 // ============================================================
-const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
-const pct = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);
-
 exports.getBeneficeFamilles = async (from, to) => {
-  const Commission = require("../models/Commission");
-  const DeclarationJournaliere = require("../models/DeclarationJournaliere");
+  const base = await baseBenefice(from, to);
+  const { reps, depenses, nomsFamilles } = base;
 
-  const match = buildMatch(from, to);
-  const start = new Date(from);
-  const end = new Date(to + "T23:59:59.999Z");
-
-  // ----------------------------------------------------------
-  // 1. Réparations de la période (une ligne par réparation)
-  // ----------------------------------------------------------
-  const reps = await Reparation.aggregate([
-    { $match: match },
-    { $lookup: { from: "categories", localField: "categorie", foreignField: "_id", as: "cat" } },
-    { $unwind: { path: "$cat", preserveNullAndEmptyArrays: true } },
-    { $lookup: { from: "familles", localField: "cat.famille", foreignField: "_id", as: "fam" } },
-    { $unwind: { path: "$fam", preserveNullAndEmptyArrays: true } },
-    {
-      $project: {
-        famille: { $ifNull: ["$fam.nom", "Non classé"] },
-        categorie: { $ifNull: ["$cat.nom", "Sans catégorie"] },
-        ca: getPrixTotalExpr(),
-        encaisse: { $ifNull: ["$acompte", 0] },
-        pieces: {
-          $filter: {
-            input: { $ifNull: ["$piecesStock", []] },
-            as: "p",
-            cond: { $eq: ["$$p.statut", "consomme"] },
-          },
-        },
-      },
-    },
-    {
-      $project: {
-        famille: 1, categorie: 1, ca: 1, encaisse: 1,
-        coutPieces: { $sum: { $map: { input: "$pieces", as: "p", in: { $ifNull: ["$$p.coutTotal", 0] } } } },
-        piecesSansCout: {
-          $size: { $filter: { input: "$pieces", as: "p", cond: { $eq: [{ $ifNull: ["$$p.coutTotal", null] }, null] } } },
-        },
-      },
-    },
-  ]);
-  const ids = reps.map((r) => r._id);
-
-  // ----------------------------------------------------------
-  // 2. Coûts rattachés aux réparations : déclarations + commissions
-  // ----------------------------------------------------------
-  const [declAgg, comAgg] = ids.length
-    ? await Promise.all([
-        DeclarationJournaliere.aggregate([
-          { $match: { statut: { $in: ["validee", "cloturee"] }, "lignes.reparation": { $in: ids } } },
-          { $unwind: "$lignes" },
-          { $match: { "lignes.statut": "active", "lignes.reparation": { $in: ids } } },
-          { $group: { _id: "$lignes.reparation", c: { $sum: { $ifNull: ["$lignes.coutTotal", 0] } } } },
-        ]),
-        // calculées + validées (les contre-écritures négatives sont « validee » → nettes)
-        Commission.aggregate([
-          { $match: { reparation: { $in: ids }, statut: { $in: ["calculee", "validee"] } } },
-          { $group: { _id: "$reparation", c: { $sum: "$montant" } } },
-        ]),
-      ])
-    : [[], []];
-  const declMap = new Map(declAgg.map((d) => [String(d._id), d.c]));
-  const comMap = new Map(comAgg.map((d) => [String(d._id), d.c]));
-
-  // ----------------------------------------------------------
-  // 3. Dépenses à répartir (même règle que l'onglet Bénéfices)
-  // ----------------------------------------------------------
-  const depAgg = await Depense.aggregate([
-    {
-      $match: {
-        isDeleted: false,
-        statut: { $ne: "annulee" },
-        type: { $in: ["REPARATION", "DIVERSE"] },
-        dateDepense: { $gte: start, $lte: end },
-      },
-    },
-    { $group: { _id: "$type", total: { $sum: "$montant" } } },
-  ]);
-  const depReparation = depAgg.find((d) => d._id === "REPARATION")?.total || 0;
-  const depDiverse = depAgg.find((d) => d._id === "DIVERSE")?.total || 0;
-
-  // ----------------------------------------------------------
-  // 4. Regroupement famille → catégories
-  // ----------------------------------------------------------
   const vide = () => ({ nb: 0, ca: 0, encaisse: 0, cout_pieces: 0, commissions: 0, pieces_sans_cout: 0 });
-  const add = (acc, r, coutPieces, com) => {
-    acc.nb += 1;
-    acc.ca += r.ca;
-    acc.encaisse += r.encaisse;
-    acc.cout_pieces += coutPieces;
-    acc.commissions += com;
-    acc.pieces_sans_cout += r.piecesSansCout;
+  const add = (acc, r) => {
+    acc.nb += 1; acc.ca += r.ca; acc.encaisse += r.encaisse;
+    acc.cout_pieces += r.coutPieces; acc.commissions += r.commissions; acc.pieces_sans_cout += r.piecesSansCout;
   };
+  const videDep = () => ({ reparation: 0, diverse: 0, achats: 0 });
+  const addDep = (acc, d) => {
+    if (d.type === "REPARATION") acc.reparation += d.total;
+    else if (d.type === "DIVERSE") acc.diverse += d.total;
+    else acc.achats += d.total;
+  };
+
   const familles = new Map();
+  const famille = (cle, nom) => {
+    if (!familles.has(cle)) familles.set(cle, { nom, ...vide(), dep: videDep(), categories: new Map() });
+    return familles.get(cle);
+  };
   const total = vide();
   for (const r of reps) {
-    const coutPieces = (r.coutPieces || 0) + (declMap.get(String(r._id)) || 0);
-    const com = comMap.get(String(r._id)) || 0;
-    if (!familles.has(r.famille)) familles.set(r.famille, { ...vide(), categories: new Map() });
-    const f = familles.get(r.famille);
+    const f = famille(r.cle, r.famille);
     if (!f.categories.has(r.categorie)) f.categories.set(r.categorie, vide());
-    add(f, r, coutPieces, com);
-    add(f.categories.get(r.categorie), r, coutPieces, com);
-    add(total, r, coutPieces, com);
+    add(f, r); add(f.categories.get(r.categorie), r); add(total, r);
+  }
+  // Dépenses rattachées à une famille (même si elle n'a aucune réparation sur la période)
+  const generales = videDep();
+  const directesTotal = videDep();
+  for (const d of depenses) {
+    if (!d.cle) { addDep(generales, d); continue; }
+    addDep(famille(d.cle, nomsFamilles.get(d.cle) || "Famille supprimée").dep, d);
+    addDep(directesTotal, d);
   }
 
-  // Clé de répartition : CA (ou nombre de réparations si CA total = 0)
+  // Clé de répartition des dépenses générales : CA (ou nombre de réparations si CA = 0)
   const parCA = total.ca > 0;
-  const part = (x) => (parCA ? x.ca / total.ca : total.nb > 0 ? x.nb / total.nb : 0);
+  const part = (x, ref = total) => (ref.ca > 0 ? x.ca / ref.ca : ref.nb > 0 ? x.nb / ref.nb : 0);
 
-  const finaliser = (x, p = part(x)) => {
-    const qpRep = depReparation * p;
-    const qpDiv = depDiverse * p;
+  const finaliser = (x, p, dir) => {
+    const gen = { reparation: generales.reparation * p, diverse: generales.diverse * p, achats: generales.achats * p };
+    const depDirectes = dir.reparation + dir.diverse + dir.achats;
+    const depGenerales = gen.reparation + gen.diverse + gen.achats;
     const margeDirecte = x.ca - x.cout_pieces - x.commissions;
-    const benefice = x.ca - qpRep - qpDiv;
+    const benefice = margeDirecte - depDirectes - depGenerales;
     return {
       nb_reparations: x.nb,
       ca: r3(x.ca),
@@ -1422,9 +1332,12 @@ exports.getBeneficeFamilles = async (from, to) => {
       commissions: r3(x.commissions),
       marge_directe: r3(margeDirecte),
       taux_marge_directe: pct(margeDirecte, x.ca),
-      depenses_reparation: r3(qpRep),
-      depenses_diverse: r3(qpDiv),
-      depenses_total: r3(qpRep + qpDiv),
+      depenses_directes: r3(depDirectes),
+      depenses_generales: r3(depGenerales),
+      depenses_reparation: r3(dir.reparation + gen.reparation),
+      depenses_diverse: r3(dir.diverse + gen.diverse),
+      achats_hors_stock: r3(dir.achats + gen.achats),
+      depenses_total: r3(depDirectes + depGenerales),
       benefice: r3(benefice),
       taux_benefice: pct(benefice, x.ca),
       panier_moyen: x.nb > 0 ? r3(x.ca / x.nb) : 0,
@@ -1432,26 +1345,35 @@ exports.getBeneficeFamilles = async (from, to) => {
       pieces_sans_cout: x.pieces_sans_cout,
     };
   };
+  const scale = (dep, k) => ({ reparation: dep.reparation * k, diverse: dep.diverse * k, achats: dep.achats * k });
 
-  const lignes = [...familles.entries()]
-    .map(([nom, f]) => ({
-      famille: nom,
-      ...finaliser(f),
-      categories: [...f.categories.entries()]
-        .map(([cat, c]) => ({ categorie: cat, ...finaliser(c) }))
-        .sort((a, b) => b.benefice - a.benefice),
-    }))
+  const lignes = [...familles.values()]
+    .map((f) => {
+      const p = part(f);
+      return {
+        famille: f.nom,
+        ...finaliser(f, p, f.dep),
+        categories: [...f.categories.entries()]
+          .map(([cat, c]) => {
+            const k = part(c, f); // part de la catégorie dans sa famille
+            return { categorie: cat, ...finaliser(c, p * k, scale(f.dep, k)) };
+          })
+          .sort((a, b) => b.benefice - a.benefice),
+      };
+    })
     .sort((a, b) => b.benefice - a.benefice);
 
   return {
     periode: { from, to },
     cle_repartition: parCA ? "ca" : "nb_reparations",
     depenses_a_repartir: {
-      reparation: r3(depReparation),
-      diverse: r3(depDiverse),
-      total: r3(depReparation + depDiverse),
+      reparation: r3(generales.reparation),
+      diverse: r3(generales.diverse),
+      achats_hors_stock: r3(generales.achats),
+      total: r3(generales.reparation + generales.diverse + generales.achats),
     },
-    totaux: finaliser(total, 1), // 100 % des dépenses (égal à l'onglet Bénéfices)
+    depenses_directes: r3(directesTotal.reparation + directesTotal.diverse + directesTotal.achats),
+    totaux: finaliser(total, 1, directesTotal), // = bénéfice net de l'onglet Bénéfices
     familles: lignes,
   };
 };

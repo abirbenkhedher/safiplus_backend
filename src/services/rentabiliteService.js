@@ -1,6 +1,5 @@
 const Reparation = require('../models/Reparation');
 const Commission = require('../models/Commission');
-const DeclarationJournaliere = require('../models/DeclarationJournaliere');
 const EcritureRemuneration = require('../models/EcritureRemuneration');
 const Depense = require('../models/Depense');
 const Stock = require('../models/Stock');
@@ -38,16 +37,6 @@ const reparation = async (repOrId) => {
     }
     if (p.sourceCout === 'ESTIME') estime = true;
     lignes.push({ source: 'reparation', designation: [p.snapshot?.typeArticle, p.snapshot?.marque, p.snapshot?.modele].filter(Boolean).join(' '), quantite: p.quantite, coutUnitaire: p.coutUnitaire, coutTotal: cout, sourceCout: p.sourceCout || 'ESTIME' });
-  }
-  // Lignes de déclarations journalières rattachées au dossier
-  const decls = await DeclarationJournaliere.find({
-    statut: { $in: ['validee', 'cloturee'] }, 'lignes.reparation': rep._id,
-  }).select('lignes').lean();
-  for (const d of decls) {
-    for (const l of d.lignes.filter((x) => x.statut === 'active' && sid(x.reparation) === sid(rep._id))) {
-      if (l.sourceCout === 'ESTIME') estime = true;
-      lignes.push({ source: 'declaration', designation: l.designation, quantite: l.quantite, coutUnitaire: l.coutUnitaire, coutTotal: l.coutTotal || 0, sourceCout: l.sourceCout });
-    }
   }
   const coutPieces = money.sum(lignes.map((l) => l.coutTotal));
   const autresCouts = 0; // les dépenses ne sont pas rattachées à un dossier dans l'existant
@@ -87,22 +76,14 @@ const boutique = async ({ from, to }) => {
   for (const r of reps) caHTm += money.toM(toHT(await params(r.boutique), prixTotalReparation(r)));
   const caHT = money.fromM(caHTm);
 
-  // Coût des pièces consommées dans la période (dossiers + déclarations, liées ou non)
+  // Coût des pièces consommées dans la période (dossiers de réparation)
   const [piecesAgg] = await Reparation.aggregate([
     { $match: { isDeleted: { $ne: true } } },
     { $unwind: '$piecesStock' },
     { $match: { 'piecesStock.statut': 'consomme', 'piecesStock.dateConsommation': { $gte: from, $lte: to } } },
     { $group: { _id: null, c: { $sum: { $ifNull: ['$piecesStock.coutTotal', 0] } } } },
   ]);
-  const declAgg = await DeclarationJournaliere.aggregate([
-    { $match: { date: { $gte: from, $lte: to }, statut: { $in: ['validee', 'cloturee'] } } },
-    { $unwind: '$lignes' },
-    { $match: { 'lignes.statut': 'active' } },
-    { $group: { _id: { lie: { $ne: ['$lignes.reparation', null] } }, c: { $sum: { $ifNull: ['$lignes.coutTotal', 0] } } } },
-  ]);
-  const declLiees = declAgg.find((d) => d._id.lie)?.c || 0;
-  const declNonLiees = declAgg.find((d) => !d._id.lie)?.c || 0;
-  const coutPieces = money.sum([piecesAgg?.c || 0, declLiees, declNonLiees]);
+  const coutPieces = money.round3(piecesAgg?.c || 0);
 
   const depAgg = await Depense.aggregate([
     { $match: { isDeleted: false, statut: { $nin: ['annulee', 'brouillon'] }, dateDepense: { $gte: from, $lte: to } } },
@@ -132,7 +113,7 @@ const boutique = async ({ from, to }) => {
     periode: { from, to },
     nbReparations: reps.length,
     caHT,
-    coutsDirects: { total: coutsDirects, pieces: coutPieces, piecesNonRattachees: money.round3(declNonLiees), depensesReparation: money.round3(dep('REPARATION')) },
+    coutsDirects: { total: coutsDirects, pieces: coutPieces, depensesReparation: money.round3(dep('REPARATION')) },
     margeBrute,
     remunerations: { total: remunerations, commissions, salaires, primesAjustements: primes },
     chargesGenerales,

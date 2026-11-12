@@ -9,8 +9,6 @@ const { AppError, jourKey, periodeKey } = require('../utils/appError');
 
 const DEFAULTS = {
   modeStock: 'simplifie',
-  modeSaisieConsommation: 'les_deux',
-  lienDeclarationReparation: 'facultatif',
   methodeValorisation: 'CMP',
   prixTTC: true,
   tauxTVA: 19,

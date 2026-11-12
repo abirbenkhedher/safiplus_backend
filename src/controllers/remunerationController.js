@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const RegleCommission = require('../models/RegleCommission');
 const ContratReparateur = require('../models/ContratReparateur');
 const Commission = require('../models/Commission');
@@ -5,10 +6,11 @@ const EcritureRemuneration = require('../models/EcritureRemuneration');
 const PaiementReparateur = require('../models/PaiementReparateur');
 const Cloture = require('../models/Cloture');
 const User = require('../models/User');
+const Boutique = require('../models/Boutique');
+const { getTenant, runAsSystem } = require('../config/tenantContext');
 const commissionService = require('../services/commissionService');
 const remuneration = require('../services/remunerationService');
 const { requireBoutiqueId, assertPeriodeOuverte } = require('../services/atelierService');
-const { userScopeFilter } = require('../services/tenantService');
 const { logAction } = require('../services/historyService');
 const { AppError, rangeFromQuery, periodeKey, isPeriode, isJour, jourBounds } = require('../utils/appError');
 const money = require('../utils/money');
@@ -29,16 +31,27 @@ const scopeReparateur = (req, requested) => {
   return sid(req.user._id);
 };
 
+// ✅ Rémunération = niveau SOCIÉTÉ : tout employé de la société (quelle que soit sa boutique)
+const societe = () => getTenant()?.organisation;
 const assertReparateur = async (req, id) => {
-  const u = await User.findOne({ _id: id, ...userScopeFilter(req) }).select('_id').lean();
-  if (!u) throw new AppError('Réparateur introuvable dans cette organisation / boutique', 404);
+  if (!mongoose.isValidObjectId(id)) throw new AppError('Réparateur invalide');
+  const u = await User.findOne({ _id: id, organisation: societe() }).select('_id').lean();
+  if (!u) throw new AppError('Réparateur introuvable dans cette société', 404);
+};
+/** Boutique de la société (contrat : rattachement ; règle : exception). null autorisé. */
+const boutiqueSociete = async (id, label) => {
+  if (!id) return null;
+  if (!mongoose.isValidObjectId(id)) throw new AppError(`${label} invalide`);
+  const b = await Boutique.findOne({ _id: id, organisation: societe() }).select('_id').lean();
+  if (!b) throw new AppError(`${label} : boutique introuvable dans cette société`);
+  return b._id;
 };
 
 // ------------------------------------------------------------
 // Réparateurs (fiche + contrat courant)
 // ------------------------------------------------------------
 exports.listReparateurs = async (req, res) => {
-  const users = await User.find({ ...userScopeFilter(req), isActive: true, role: { $in: ['REPARATEUR', 'ADMIN'] } })
+  const users = await User.find({ organisation: societe(), isActive: true, role: { $in: [...User.ROLES_REPARATEUR, 'ADMIN'] } }) // ✅ commerciaux inclus, toute la société
     .select('firstName lastName username role').sort({ firstName: 1 }).lean();
   const now = new Date();
   const contrats = await ContratReparateur.find({ validFrom: { $lte: now }, $or: [{ validTo: null }, { validTo: { $gte: now } }] }).lean();
@@ -49,7 +62,7 @@ exports.listReparateurs = async (req, res) => {
 // ------------------------------------------------------------
 // Règles de commission (versionnées)
 // ------------------------------------------------------------
-const RULE_FIELDS = ['nom', 'reparateur', 'article', 'categorie', 'typeArticle', 'panne', 'typeCalcul', 'base', 'taux', 'montantFixe', 'paliers', 'validFrom', 'validTo', 'priorite'];
+const RULE_FIELDS = ['nom', 'reparateur', 'boutiqueCible', 'article', 'categorie', 'typeArticle', 'panne', 'typeCalcul', 'base', 'taux', 'montantFixe', 'paliers', 'validFrom', 'validTo', 'priorite'];
 const pickRule = (b) => {
   const o = {};
   for (const k of RULE_FIELDS) if (b[k] !== undefined) o[k] = b[k] === '' ? null : b[k];
@@ -63,7 +76,7 @@ exports.listRegles = async (req, res) => {
   if (req.query.actif !== 'all') q.actif = true;
   if (req.query.reparateur) q.reparateur = req.query.reparateur;
   const data = await RegleCommission.find(q)
-    .populate('reparateur', userPop).populate('categorie', 'nom').populate('typeArticle', 'nom')
+    .populate('reparateur', userPop).populate('categorie', 'nom').populate('typeArticle', 'nom').populate('boutiqueCible', 'nom code')
     .populate({ path: 'article', select: 'code typeArticle marque modele', populate: [{ path: 'typeArticle', select: 'nom' }, { path: 'marque', select: 'nom' }, { path: 'modele', select: 'nom' }] })
     .sort({ actif: -1, validFrom: -1 }).lean();
   const now = new Date();
@@ -79,6 +92,7 @@ exports.listRegles = async (req, res) => {
 };
 
 exports.createRegle = async (req, res) => {
+  if (req.body.boutiqueCible !== undefined) req.body.boutiqueCible = await boutiqueSociete(req.body.boutiqueCible, 'Boutique de la règle');
   const data = pickRule(req.body);
   if (!data.validFrom) data.validFrom = new Date();
   if (data.reparateur) await assertReparateur(req, data.reparateur);
@@ -89,21 +103,50 @@ exports.createRegle = async (req, res) => {
 
 /** Une règle déjà utilisée n'est jamais modifiée : nouvelle version + clôture de l'ancienne. */
 exports.updateRegle = async (req, res) => {
+  if (req.body.boutiqueCible !== undefined) req.body.boutiqueCible = await boutiqueSociete(req.body.boutiqueCible, 'Boutique de la règle');
   const old = await RegleCommission.findById(req.params.id);
   if (!old) throw new AppError('Règle introuvable', 404);
   if (!old.actif) throw new AppError('Règle désactivée : créez une nouvelle règle', 409);
   const data = pickRule(req.body);
   const used = await Commission.exists({ regle: old._id });
 
+  // ✅ Date seule (formulaire) = aujourd'hui → prise d'effet MAINTENANT :
+  //    les commissions déjà calculées gardent l'ancienne version, les suivantes prennent la nouvelle.
+  //    (Avant : "aujourd'hui" = 00:00, refusé si la règle avait été créée le jour même.)
+  const now = new Date();
+  const jourLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const brut = String(req.body.validFrom || ''); // valeur saisie (pickRule l'a déjà convertie en Date)
+
   if (!used) {
+    // Version non encore utilisée qui remplace une version précédente :
+    // elle ne peut pas commencer avant celle-ci (sinon deux versions se chevauchent).
+    if (old.remplace && data.validFrom) {
+      const prev = await RegleCommission.findById(old.remplace);
+      // « aujourd'hui » sur une version qui commence déjà aujourd'hui → on garde son début
+      if (brut === jourLocal(now) && jourLocal(old.validFrom) === brut) data.validFrom = old.validFrom;
+      if (prev && data.validFrom <= prev.validFrom) {
+        throw new AppError(
+          `Cette version doit commencer après la version précédente (${prev.validFrom.toLocaleString('fr-FR')}).`
+        );
+      }
+      if (prev) {
+        prev.validTo = new Date(new Date(data.validFrom).getTime() - 1);
+        await prev.save();
+      }
+    }
     old.set(data);
     await old.save();
     await logAction({ entityType: 'RegleCommission', entityId: old._id, action: 'UPDATE', userId: req.user._id, newValue: data, req });
     return res.json({ success: true, message: 'Règle modifiée', data: old });
   }
 
-  const effet = data.validFrom ? new Date(data.validFrom) : new Date();
-  if (effet <= old.validFrom) throw new AppError("La nouvelle version doit prendre effet après le début de l'ancienne");
+  let effet = data.validFrom ? new Date(data.validFrom) : now;
+  if (brut === jourLocal(now)) effet = now;
+  if (effet <= old.validFrom) {
+    throw new AppError(
+      `La nouvelle version doit prendre effet après le début de la version actuelle (${old.validFrom.toLocaleString('fr-FR')}). Choisissez aujourd'hui ou une date ultérieure.`
+    );
+  }
   const base = old.toObject();
   delete base._id; delete base.createdAt; delete base.updatedAt; delete base.__v;
   const nouvelle = new RegleCommission({
@@ -135,12 +178,15 @@ exports.listContrats = async (req, res) => {
   const q = {};
   const rep = scopeReparateur(req, req.query.reparateur);
   if (rep) q.reparateur = rep;
-  const data = await ContratReparateur.find(q).populate('reparateur', userPop).populate('createdBy', userPop).sort({ validFrom: -1 }).lean();
+  const data = await ContratReparateur.find(q).populate('reparateur', userPop).populate('createdBy', userPop)
+    .populate('boutiqueRattachement', 'nom code').sort({ validFrom: -1 }).lean();
   res.json({ success: true, data });
 };
 
 exports.createContrat = async (req, res) => {
   const { reparateur, mode, salaire = 0, periodicite = 'mensuelle', observation = '' } = req.body;
+  // Boutique qui porte le salaire (par défaut : la boutique active)
+  const boutiqueRattachement = (await boutiqueSociete(req.body.boutiqueRattachement, 'Boutique de rattachement')) || requireBoutiqueId();
   if (!reparateur || !['salaire', 'commission', 'mixte'].includes(mode)) throw new AppError('Réparateur et mode requis');
   if (mode !== 'commission' && !(Number(salaire) > 0)) throw new AppError('Montant du salaire requis pour ce mode');
   await assertReparateur(req, reparateur);
@@ -156,7 +202,7 @@ exports.createContrat = async (req, res) => {
   }
   const contrat = await ContratReparateur.create({
     reparateur, mode, salaire: mode === 'commission' ? 0 : money.round3(salaire), periodicite,
-    validFrom, observation, createdBy: req.user._id,
+    validFrom, observation, boutiqueRattachement, createdBy: req.user._id,
   });
   await logAction({ entityType: 'ContratReparateur', entityId: contrat._id, action: 'CREATE', userId: req.user._id, newValue: { mode, salaire, periodicite, validFrom }, req });
   res.status(201).json({ success: true, data: contrat });
@@ -222,7 +268,7 @@ exports.listEcritures = async (req, res) => {
   const q = { date: { $gte: from, $lte: to } };
   const rep = scopeReparateur(req, req.query.reparateur);
   if (rep) q.reparateur = rep;
-  const data = await EcritureRemuneration.find(q).populate('reparateur', userPop).sort({ date: -1 }).lean();
+  const data = await EcritureRemuneration.find(q).populate('reparateur', userPop).populate('boutique', 'nom code').sort({ date: -1 }).lean();
   res.json({ success: true, data });
 };
 
@@ -236,7 +282,7 @@ exports.createEcriture = async (req, res) => {
   const date = req.body.date ? new Date(req.body.date) : new Date();
   const boutique = requireBoutiqueId();
   await assertPeriodeOuverte(boutique, date);
-  const e = await EcritureRemuneration.create({ reparateur, type, montant: m, libelle, date, periode: periodeKey(date), createdBy: req.user._id });
+  const e = await EcritureRemuneration.create({ boutique, reparateur, type, montant: m, libelle, date, periode: periodeKey(date), createdBy: req.user._id });
   await logAction({ entityType: 'EcritureRemuneration', entityId: e._id, action: 'ADJUST', userId: req.user._id, newValue: { type, montant: m, libelle }, req });
   res.status(201).json({ success: true, data: e });
 };
@@ -273,7 +319,8 @@ exports.listPaiements = async (req, res) => {
   const q = { date: { $gte: from, $lte: to } };
   const rep = scopeReparateur(req, req.query.reparateur);
   if (rep) q.reparateur = rep;
-  const data = await PaiementReparateur.find(q).populate('reparateur', userPop).populate('createdBy', userPop).sort({ date: -1 }).lean();
+  const data = await PaiementReparateur.find(q).populate('reparateur', userPop).populate('createdBy', userPop)
+    .populate('boutique', 'nom code').sort({ date: -1 }).lean();
   res.json({ success: true, data });
 };
 
@@ -287,7 +334,7 @@ exports.createPaiement = async (req, res) => {
   const boutique = requireBoutiqueId();
   await assertPeriodeOuverte(boutique, date);
   const p = await PaiementReparateur.create({
-    reparateur, type, montant: m, date, periode: periodeKey(date), modePaiement, reference, observation, createdBy: req.user._id,
+    boutique, reparateur, type, montant: m, date, periode: periodeKey(date), modePaiement, reference, observation, createdBy: req.user._id,
   });
   await logAction({ entityType: 'PaiementReparateur', entityId: p._id, action: 'PAYMENT', userId: req.user._id, newValue: { type, montant: m }, req });
   const [solde] = await remuneration.soldes({ from: new Date(0), to: new Date(), reparateurs: [reparateur] });
@@ -322,7 +369,8 @@ exports.me = async (req, res) => {
   const me = sid(req.user._id);
   const [soldes, commissions, contrat] = await Promise.all([
     remuneration.soldes({ from, to, reparateurs: [me] }),
-    Commission.find({ reparateur: me, dateSource: { $gte: from, $lte: to } }).populate('reparation', 'numero').sort({ dateSource: -1 }).lean(),
+    ((org) => runAsSystem(() => Commission.find({ organisation: org, reparateur: me, dateSource: { $gte: from, $lte: to } })
+      .populate('reparation', 'numero').populate('boutique', 'nom code').sort({ dateSource: -1 }).lean().exec()))(societe()), // .exec() : exécuter DANS le contexte système
     ContratReparateur.findOne({ reparateur: me, validFrom: { $lte: new Date() }, $or: [{ validTo: null }, { validTo: { $gte: new Date() } }] }).lean(),
   ]);
   res.json({ success: true, data: { solde: soldes[0] || null, commissions, contrat } });

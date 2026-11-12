@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
 const Depense = require('../models/Depense');
 const Reparation = require('../models/Reparation');
-const DeclarationJournaliere = require('../models/DeclarationJournaliere');
 const Commission = require('../models/Commission');
 const Stock = require('../models/Stock');
 const User = require('../models/User');
@@ -89,29 +88,17 @@ const RAPPORTS = {
   async consommations(q, [from, to]) {
     const groupBy = q.groupBy || 'article';
     const keyRep = { article: '$piecesStock.stock', reparateur: { $ifNull: ['$piecesStock.reparateur', '$reparateur'] }, jour: { $dateToString: { format: '%Y-%m-%d', date: '$piecesStock.dateConsommation' } } }[groupBy];
-    const keyDecl = { article: '$lignes.stock', reparateur: '$reparateur', jour: '$jour' }[groupBy];
     if (!keyRep) throw new AppError('groupBy invalide');
-    const [a, b] = await Promise.all([
-      Reparation.aggregate([
-        { $match: { isDeleted: { $ne: true } } }, { $unwind: '$piecesStock' },
-        { $match: { 'piecesStock.statut': 'consomme', 'piecesStock.dateConsommation': { $gte: from, $lte: to } } },
-        { $group: { _id: keyRep, quantite: { $sum: '$piecesStock.quantite' }, cout: { $sum: { $ifNull: ['$piecesStock.coutTotal', 0] } } } },
-      ]),
-      DeclarationJournaliere.aggregate([
-        { $match: { date: { $gte: from, $lte: to }, statut: { $in: ['validee', 'cloturee'] } } }, { $unwind: '$lignes' },
-        { $match: { 'lignes.statut': 'active' } },
-        { $group: { _id: keyDecl, quantite: { $sum: '$lignes.quantite' }, cout: { $sum: { $ifNull: ['$lignes.coutTotal', 0] } } } },
-      ]),
+    // ✅ Consommations : uniquement celles des dossiers de réparation
+    const a = await Reparation.aggregate([
+      { $match: { isDeleted: { $ne: true } } }, { $unwind: '$piecesStock' },
+      { $match: { 'piecesStock.statut': 'consomme', 'piecesStock.dateConsommation': { $gte: from, $lte: to } } },
+      { $group: { _id: keyRep, quantite: { $sum: '$piecesStock.quantite' }, cout: { $sum: { $ifNull: ['$piecesStock.coutTotal', 0] } } } },
     ]);
     const m = new Map();
-    for (const [src, list] of [['dossier', a], ['declaration', b]]) {
-      for (const r of list) {
-        const k = sid(r._id) || String(r._id);
-        const row = m.get(k) || { id: r._id, quantiteDossiers: 0, quantiteDeclarations: 0, cout: 0 };
-        row[src === 'dossier' ? 'quantiteDossiers' : 'quantiteDeclarations'] += r.quantite;
-        row.cout = money.sum([row.cout, r.cout]);
-        m.set(k, row);
-      }
+    for (const r of a) {
+      const k = sid(r._id) || String(r._id);
+      m.set(k, { id: r._id, quantite: r.quantite, cout: money.round3(r.cout) });
     }
     const rows = [...m.values()];
     let label = (r) => String(r.id);
@@ -124,8 +111,8 @@ const RAPPORTS = {
       label = (r) => sm.get(sid(r.id)) || '—';
     }
     return {
-      colonnes: [{ key: 'cle', label: groupBy }, { key: 'quantiteDossiers', label: 'Qté (dossiers)' }, { key: 'quantiteDeclarations', label: 'Qté (déclarations)' }, { key: 'cout', label: 'Coût (TND)', money: true }],
-      lignes: rows.map((r) => ({ cle: label(r), quantiteDossiers: r.quantiteDossiers, quantiteDeclarations: r.quantiteDeclarations, cout: r.cout })).sort((x, y) => y.cout - x.cout),
+      colonnes: [{ key: 'cle', label: groupBy }, { key: 'quantite', label: 'Quantité' }, { key: 'cout', label: 'Coût (TND)', money: true }],
+      lignes: rows.map((r) => ({ cle: label(r), quantite: r.quantite, cout: r.cout })).sort((x, y) => y.cout - x.cout),
       totaux: { cout: money.sum(rows.map((r) => r.cout)) },
     };
   },

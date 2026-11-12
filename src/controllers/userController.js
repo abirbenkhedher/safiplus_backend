@@ -90,6 +90,14 @@ exports.getOne = async (req, res) => {
   }
 };
 
+// GET - Annuaire léger des employés visibles (aucune donnée sensible)
+exports.annuaire = async (req, res) => {
+  const users = await User.find({ ...userScopeFilter(req) })
+    .select('firstName lastName username role isActive')
+    .sort({ firstName: 1 }).lean();
+  res.json({ success: true, data: users });
+};
+
 // GET - Récupérer les modules disponibles
 exports.getAvailableModules = async (req, res) => {
   res.json({

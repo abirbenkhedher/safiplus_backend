@@ -1,3 +1,5 @@
+const mongoose = require('mongoose');
+const Famille = require('../models/Famille');
 const path = require('path');
 const fs = require('fs');
 const Depense = require('../models/Depense');
@@ -74,11 +76,21 @@ const populateDepense = (q) => q
   .populate('createdBy', 'username firstName lastName')
   .populate('valideePar', 'username firstName lastName')
   .populate('annuleePar', 'username firstName lastName')
-  .populate('fournisseurRef', 'nom');
+  .populate('fournisseurRef', 'nom')
+  .populate('famille', 'nom');
 
 // ============================================================
 // GET - Liste des dépenses avec filtres
 // ============================================================
+// ✅ Famille de la dépense : doit appartenir à la société (référentiel filtré par le tenant)
+const checkFamille = async (id) => {
+  if (!id) return null;
+  if (!mongoose.isValidObjectId(id)) throw new AppError('Famille invalide');
+  const f = await Famille.findById(id).select('_id').lean();
+  if (!f) throw new AppError('Famille introuvable');
+  return f._id;
+};
+
 exports.getAll = async (req, res) => {
   try {
     const { type, statut, fournisseurRef, dateDebut, dateFin, search, page = 1 } = req.query;
@@ -87,6 +99,8 @@ exports.getAll = async (req, res) => {
     if (type) query.type = type;
     if (statut) query.statut = statut;
     if (fournisseurRef) query.fournisseurRef = fournisseurRef;
+    if (req.query.famille === 'generale') query.famille = null;
+    else if (req.query.famille && mongoose.isValidObjectId(req.query.famille)) query.famille = req.query.famille;
 
     const dates = buildDateFilter(dateDebut, dateFin);
     if (dates) query.dateDepense = dates;
@@ -176,7 +190,7 @@ exports.getStats = async (req, res) => {
 exports.create = async (req, res) => {
   const {
     type, montant, categorieDiverse, motifDiverse, fournisseur, fournisseurRef,
-    factureNumero, dateDepense, modePaiement, observation, lignes,
+    factureNumero, dateDepense, modePaiement, observation, lignes, famille,
   } = req.body;
 
   if (!type || !TYPES.includes(type)) throw new AppError('Type invalide');
@@ -203,6 +217,7 @@ exports.create = async (req, res) => {
     dateDepense: dateDepense ? new Date(dateDepense) : new Date(),
     modePaiement: modePaiement || 'ESPECES',
     observation: observation || '',
+    famille: await checkFamille(famille),
     createdBy: req.user.id,
   };
   if (type === 'ACHAT') doc.lignes = await parseLignes(lignes);
@@ -234,6 +249,7 @@ exports.update = async (req, res) => {
     'categorieDiverse', 'motifDiverse', 'fournisseur', 'fournisseurRef',
     'factureNumero', 'dateDepense', 'modePaiement', 'observation',
   ];
+  if (req.body.famille !== undefined) depense.famille = await checkFamille(req.body.famille);
   if (depense.type !== 'ACHAT') allowed.push('montant');
   const before = depense.toObject();
   allowed.forEach((k) => { if (req.body[k] !== undefined) depense[k] = req.body[k]; });

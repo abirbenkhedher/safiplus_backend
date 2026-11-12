@@ -36,7 +36,9 @@ const BOUTIQUE_MODELS = [
   'Reparation', 'Stock', 'MouvementStock', 'Depense', 'History', 'TeamMessage',
 ];
 
-[...ORG_MODELS, ...BOUTIQUE_MODELS].forEach((m) => require(`../src/models/${m}`));
+// Rémunération : contrats, règles, paiements, écritures = niveau SOCIÉTÉ ; commissions = par boutique
+const ATELIER_MODELS = ['ContratReparateur', 'RegleCommission', 'PaiementReparateur', 'EcritureRemuneration', 'Commission'];
+[...ORG_MODELS, ...BOUTIQUE_MODELS, ...ATELIER_MODELS].forEach((m) => require(`../src/models/${m}`));
 
 const missing = (field) => ({ $or: [{ [field]: { $exists: false } }, { [field]: null }] });
 
@@ -125,6 +127,31 @@ const migrate = async () => {
     console.log(`🔑 Permission "stock" ajoutée à ${rep.modifiedCount} réparateur(s)`);
   }
 
+  // Tableau de bord personnel : nouvelle permission, donnée une fois à tous les comptes existants
+  if (!(await done.findOne({ _id: 'permission-mon-dashboard' }))) {
+    const md = await users.updateMany(
+      { role: { $in: ['COMMERCIAL', 'REPARATEUR'] }, permissions: { $ne: 'mon_dashboard' } },
+      { $addToSet: { permissions: 'mon_dashboard' } }
+    );
+    await done.insertOne({ _id: 'permission-mon-dashboard', at: new Date() });
+    console.log(`🔑 Permission "mon_dashboard" ajoutée à ${md.modifiedCount} utilisateur(s)`);
+  }
+
+  // Déclarations journalières supprimées : la consommation se fait uniquement dans le
+  // dossier de réparation → on retire les permissions devenues invalides (sinon la
+  // validation du modèle User échoue à la prochaine modification du compte).
+  const obsoletes = ['declarations', 'consommations_valider'];
+  const pulled = await users.updateMany(
+    { permissions: { $in: obsoletes } },
+    { $pull: { permissions: { $in: obsoletes } } }
+  );
+  if (pulled.modifiedCount) console.log(`🧹 Permissions "déclarations" retirées de ${pulled.modifiedCount} utilisateur(s)`);
+  const params = await mongoose.connection.db.collection('parametresateliers').updateMany(
+    { $or: [{ modeSaisieConsommation: { $exists: true } }, { lienDeclarationReparation: { $exists: true } }] },
+    { $unset: { modeSaisieConsommation: '', lienDeclarationReparation: '' } }
+  );
+  if (params.modifiedCount) console.log(`🧹 Paramètres atelier nettoyés : ${params.modifiedCount}`);
+
   // ----------------------------------------------------------
   // 4. SUPER_ADMIN
   // ----------------------------------------------------------
@@ -149,8 +176,43 @@ const migrate = async () => {
   // ----------------------------------------------------------
   // 5. Index (supprime les anciens index uniques globaux)
   // ----------------------------------------------------------
+  // 5. Rémunération au niveau de la société (idempotent)
+  // ----------------------------------------------------------
+  const db = mongoose.connection.db;
+  // Contrats : la boutique d'origine devient la boutique de rattachement (salaire)
+  const rat = await db.collection('contratreparateurs').updateMany(
+    { boutiqueRattachement: { $exists: false }, boutique: { $ne: null } },
+    [{ $set: { boutiqueRattachement: '$boutique' } }]
+  );
+  if (rat.modifiedCount) console.log(`📄 Contrats : boutique de rattachement renseignée (${rat.modifiedCount})`);
+  // Un seul contrat ouvert par employé : on garde le plus récent, les autres sont clos la veille
+  const ouverts = await db.collection('contratreparateurs').aggregate([
+    { $match: { validTo: null } },
+    { $sort: { validFrom: -1 } },
+    { $group: { _id: { o: '$organisation', r: '$reparateur' }, ids: { $push: '$_id' }, debuts: { $push: '$validFrom' } } },
+    { $match: { 'ids.1': { $exists: true } } },
+  ]).toArray();
+  for (const g of ouverts) {
+    const fin = new Date(new Date(g.debuts[0]).getTime() - 1);
+    await db.collection('contratreparateurs').updateMany({ _id: { $in: g.ids.slice(1) } }, { $set: { validTo: fin } });
+    console.log(`📄 Contrats en double fusionnés pour un employé : ${g.ids.length - 1} clos`);
+  }
+  // Règles identiques recopiées dans plusieurs boutiques : une seule reste active
+  const cle = ['reparateur', 'article', 'categorie', 'typeArticle', 'panne', 'typeCalcul', 'base', 'taux', 'montantFixe'];
+  const regles = await db.collection('reglecommissions').find({ actif: true }).sort({ createdAt: 1 }).toArray();
+  const vues = new Map();
+  let desactivees = 0;
+  for (const r of regles) {
+    const k = [String(r.organisation), ...cle.map((c) => String(r[c] ?? '')), JSON.stringify(r.paliers || [])].join('|');
+    if (!vues.has(k)) { vues.set(k, r._id); continue; }
+    await db.collection('reglecommissions').updateOne({ _id: r._id }, { $set: { actif: false, validTo: new Date() } });
+    desactivees += 1;
+  }
+  if (desactivees) console.log(`📐 Règles en double désactivées : ${desactivees}`);
+
+  // ----------------------------------------------------------
   console.log('🔧 Reconstruction des index...');
-  const all = ['Organisation', 'Boutique', 'User', 'Counter', ...ORG_MODELS, ...BOUTIQUE_MODELS];
+  const all = ['Organisation', 'Boutique', 'User', 'Counter', ...ORG_MODELS, ...BOUTIQUE_MODELS, ...ATELIER_MODELS];
   for (const name of all) {
     try {
       const dropped = await mongoose.model(name).syncIndexes();

@@ -21,11 +21,13 @@ const ecritureSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 }, { timestamps: true });
 
-ecritureSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+// ✅ Par société ; boutique = boutique qui porte le coût (salaire : boutique de rattachement)
+ecritureSchema.plugin(tenantPlugin, { scope: 'organisation' });
+ecritureSchema.add({ boutique: { type: mongoose.Schema.Types.ObjectId, ref: 'Boutique', default: null } });
 ecritureSchema.index(
-  { boutique: 1, cle: 1 },
+  { organisation: 1, cle: 1 },
   { unique: true, partialFilterExpression: { cle: { $type: 'string' } } }
 );
-ecritureSchema.index({ boutique: 1, reparateur: 1, periode: 1 });
+ecritureSchema.index({ organisation: 1, reparateur: 1, periode: 1 });
 
 module.exports = mongoose.model('EcritureRemuneration', ecritureSchema);

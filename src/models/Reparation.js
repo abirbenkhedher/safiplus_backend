@@ -389,6 +389,24 @@ function computePrixTotal(doc) {
 reparationSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
 
 // ============================================================
+// ✅ Dates de fin / de livraison renseignées au changement de statut
+//    (tableaux de bord : réparations terminées, délai moyen, livrées)
+// ============================================================
+reparationSchema.pre('save', async function () {
+  if (!this.isModified('status') || !this.status) return;
+  const { etapeReparation } = require('../utils/etapeReparation');
+  const st = await mongoose.model('Status').findById(this.status).select('label').lean();
+  const etape = etapeReparation(st?.label);
+  if (etape === 'en_cours') {
+    // Réouverture : la réparation n'est plus terminée
+    this.dateFinReelle = null;
+    return;
+  }
+  if (!this.dateFinReelle) this.dateFinReelle = new Date();
+  if (etape === 'livree' && !this.dateLivraison) this.dateLivraison = new Date();
+});
+
+// ============================================================
 // VIRTUALS
 // ============================================================
 reparationSchema.virtual('prixTotal').get(function () {

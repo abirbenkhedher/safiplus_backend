@@ -12,11 +12,10 @@ const commissionSchema = new mongoose.Schema({
   // Source
   sourceType: {
     type: String,
-    enum: ['PIECE_REPARATION', 'INTERVENTION', 'LIGNE_DECLARATION', 'AJUSTEMENT'],
+    enum: ['PIECE_REPARATION', 'INTERVENTION', 'AJUSTEMENT'],
     required: true,
   },
   reparation: { type: mongoose.Schema.Types.ObjectId, ref: 'Reparation', default: null },
-  declaration: { type: mongoose.Schema.Types.ObjectId, ref: 'DeclarationJournaliere', default: null },
   sourceLigneId: { type: mongoose.Schema.Types.ObjectId, default: null },
   article: { type: mongoose.Schema.Types.ObjectId, ref: 'Stock', default: null },
   panne: { type: String, default: null },

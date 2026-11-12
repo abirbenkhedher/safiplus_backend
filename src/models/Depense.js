@@ -80,6 +80,9 @@ const depenseSchema = new mongoose.Schema({
   },
 
   observation: { type: String, trim: true, default: '' },
+  // ✅ Famille concernée (GSM, Informatique…) : la dépense lui est imputée dans les
+  //    statistiques Bénéfice. null = dépense générale (répartie au prorata du CA).
+  famille: { type: mongoose.Schema.Types.ObjectId, ref: 'Famille', default: null, index: true },
 
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

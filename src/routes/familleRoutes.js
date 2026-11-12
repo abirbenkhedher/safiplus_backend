@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
-const { requirePermission, requirePermissionOrRead } = require('../middleware/permissions');
+const { requirePermission, requirePermissionOrRead, requireAnyPermission } = require('../middleware/permissions');
 const familleController = require('../controllers/familleController');
 
-router.get('/', requireAuth, requirePermissionOrRead('familles'), familleController.getAll);
+// Lecture aussi avec « réparations » : le formulaire de réparation a besoin des familles
+router.get('/', requireAuth, requireAnyPermission(['familles', 'familles:read', 'reparations', 'depenses']), familleController.getAll);
 router.get('/:id', requireAuth, requirePermissionOrRead('familles'), familleController.getOne);
 
 router.post('/', requireAuth, requirePermission('familles'), familleController.create);

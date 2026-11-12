@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const tenantPlugin = require('./plugins/tenantPlugin');
 
 // ============================================================
-// ✅ CONTRAT / MODE DE RÉMUNÉRATION D'UN RÉPARATEUR (par boutique)
+// ✅ CONTRAT / MODE DE RÉMUNÉRATION D'UN RÉPARATEUR (un par employé pour toute la société)
 // Versionné : une modification crée une nouvelle version et clôt
 // la précédente (validTo). Les périodes passées restent intactes.
 // ============================================================
@@ -23,7 +23,10 @@ const contratSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 }, { timestamps: true });
 
-contratSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
-contratSchema.index({ boutique: 1, reparateur: 1, validFrom: -1 });
+// ✅ Un contrat par employé pour TOUTE la société (toutes les boutiques)
+contratSchema.plugin(tenantPlugin, { scope: 'organisation' });
+// Boutique qui porte le coût du salaire fixe (salaire généré à SA clôture mensuelle)
+contratSchema.add({ boutiqueRattachement: { type: mongoose.Schema.Types.ObjectId, ref: 'Boutique', default: null } });
+contratSchema.index({ organisation: 1, reparateur: 1, validFrom: -1 });
 
 module.exports = mongoose.model('ContratReparateur', contratSchema);

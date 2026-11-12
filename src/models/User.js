@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 // ============================================================
 const AVAILABLE_MODULES = [
   'dashboard',
+  'mon_dashboard',          // tableau de bord personnel
   'clients',
   'reparations',
   'paiements',
@@ -34,8 +35,6 @@ const AVAILABLE_MODULES = [
   'parametres_atelier',     // paramètres de la boutique (mode stock, valorisation...)
   'fournisseurs',
   'achats',                 // factures d'achat (saisie + validation)
-  'declarations',           // déclarations journalières (saisie)
-  'consommations_valider',  // contrôle / validation des déclarations
   'remuneration',           // journal des rémunérations (lecture)
   'remuneration_autrui',    // consulter les rémunérations des autres réparateurs
   'remuneration_regles',    // modifier taux, règles et contrats
@@ -60,6 +59,7 @@ const DEFAULT_PERMISSIONS = {
     'users', 'history',
   ],
   COMMERCIAL: [
+    'mon_dashboard',
     'dashboard',
     'clients',
     'reparations',
@@ -74,6 +74,7 @@ const DEFAULT_PERMISSIONS = {
     'pannes:read',         // ✅ AJOUT : lecture
   ],
   REPARATEUR: [
+    'mon_dashboard',
     'dashboard',
     'reparations',
     'stock',
@@ -84,7 +85,6 @@ const DEFAULT_PERMISSIONS = {
     'modeles:read',        // ✅ AJOUT
     'pannes',              // ✅ AJOUT : accès complet
     'pannes:read',         // ✅ AJOUT : lecture
-    'declarations',        // ✅ ses propres déclarations journalières
   ],
 };
 
@@ -244,5 +244,8 @@ userSchema.methods.hasAnyPermission = function (modules) {
 
 userSchema.statics.AVAILABLE_MODULES = AVAILABLE_MODULES;
 userSchema.statics.DEFAULT_PERMISSIONS = DEFAULT_PERMISSIONS;
+// ✅ Rôles qui peuvent réparer (choix de l'atelier : un commercial est aussi réparateur) :
+//    affectation des réparations, catégories, contrats, commissions, « Ma rémunération »…
+userSchema.statics.ROLES_REPARATEUR = ['REPARATEUR', 'COMMERCIAL'];
 
 module.exports = mongoose.model('User', userSchema);

@@ -7,14 +7,11 @@ const tenantPlugin = require('./plugins/tenantPlugin');
 // jamais les autres.
 // ============================================================
 const MODES_STOCK = ['desactive', 'simplifie', 'detaille'];
-const MODES_SAISIE = ['reparation', 'journaliere', 'les_deux'];
-const LIENS_DECLARATION = ['obligatoire', 'facultatif', 'desactive'];
 const VALORISATIONS = ['CMP', 'FIFO', 'MANUEL'];
 
 const parametresSchema = new mongoose.Schema({
   modeStock: { type: String, enum: MODES_STOCK, default: 'simplifie' },
-  modeSaisieConsommation: { type: String, enum: MODES_SAISIE, default: 'les_deux' },
-  lienDeclarationReparation: { type: String, enum: LIENS_DECLARATION, default: 'facultatif' },
+  // ✅ Consommation du stock : uniquement dans le dossier de réparation
   methodeValorisation: { type: String, enum: VALORISATIONS, default: 'CMP' },
 
   // Bases de calcul (documentées, cf. §8.1 / §12)
@@ -45,8 +42,6 @@ parametresSchema.index({ boutique: 1 }, { unique: true });
 
 const ParametresAtelier = mongoose.model('ParametresAtelier', parametresSchema);
 ParametresAtelier.MODES_STOCK = MODES_STOCK;
-ParametresAtelier.MODES_SAISIE = MODES_SAISIE;
-ParametresAtelier.LIENS_DECLARATION = LIENS_DECLARATION;
 ParametresAtelier.VALORISATIONS = VALORISATIONS;
 
 module.exports = ParametresAtelier;

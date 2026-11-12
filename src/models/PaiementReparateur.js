@@ -21,7 +21,9 @@ const paiementSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 }, { timestamps: true });
 
-paiementSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
-paiementSchema.index({ boutique: 1, reparateur: 1, date: -1 });
+// ✅ Paiement de l'employé pour toute la société ; boutique = caisse qui a payé (information)
+paiementSchema.plugin(tenantPlugin, { scope: 'organisation' });
+paiementSchema.add({ boutique: { type: mongoose.Schema.Types.ObjectId, ref: 'Boutique', default: null } });
+paiementSchema.index({ organisation: 1, reparateur: 1, date: -1 });
 
 module.exports = mongoose.model('PaiementReparateur', paiementSchema);

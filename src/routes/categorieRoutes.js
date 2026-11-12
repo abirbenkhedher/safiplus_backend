@@ -1,12 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
-const { requirePermission, requirePermissionOrRead } = require('../middleware/permissions');
+const { requirePermission, requireAnyPermission } = require('../middleware/permissions');
+// ✅ Lecture : module, lecture seule, ou « réparations » (formulaire et liste des réparations)
+const canRead = requireAnyPermission(['categories', 'categories:read', 'reparations']);
 const categorieController = require('../controllers/categorieController');
 
 // ✅ LECTURE : 'categories' OU 'categories:read'
-router.get('/', requireAuth, requirePermissionOrRead('categories'), categorieController.getAll);
-router.get('/:id', requireAuth, requirePermissionOrRead('categories'), categorieController.getOne);
+router.get('/', requireAuth, canRead, categorieController.getAll);
+router.get('/:id', requireAuth, canRead, categorieController.getOne);
 
 // ✅ ÉCRITURE : 'categories' uniquement
 router.post('/', requireAuth, requirePermission('categories'), categorieController.create);

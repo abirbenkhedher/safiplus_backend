@@ -14,7 +14,8 @@ router.get('/', (req, res, next) => {
   const hasAccess =
     ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('pannes') ||
-    user.permissions?.includes('pannes:read');
+    user.permissions?.includes('pannes:read') ||
+    user.permissions?.includes('reparations'); // ✅ formulaire de réparation
 
   if (!hasAccess) {
     return res.status(403).json({
@@ -30,7 +31,8 @@ router.get('/:id', (req, res, next) => {
   const hasAccess =
     ['ADMIN', 'SUPER_ADMIN'].includes(user.role) ||
     user.permissions?.includes('pannes') ||
-    user.permissions?.includes('pannes:read');
+    user.permissions?.includes('pannes:read') ||
+    user.permissions?.includes('reparations'); // ✅ formulaire de réparation
 
   if (!hasAccess) {
     return res.status(403).json({

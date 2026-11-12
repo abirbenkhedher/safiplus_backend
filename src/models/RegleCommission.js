@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const tenantPlugin = require('./plugins/tenantPlugin');
 
 // ============================================================
-// ✅ RÈGLE DE COMMISSION (versionnée, par boutique)
+// ✅ RÈGLE DE COMMISSION (versionnée, commune à la société ; exception par boutique possible)
 // Ciblage : réparateur (null = tous) × [article | catégorie | type
 // d'article | panne/intervention] (tous null = règle générale).
 // Une règle déjà utilisée n'est jamais modifiée : nouvelle version.
@@ -41,8 +41,10 @@ const regleSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 }, { timestamps: true });
 
-regleSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
-regleSchema.index({ boutique: 1, actif: 1, validFrom: 1 });
+// ✅ Règles communes à la société ; boutiqueCible = exception pour une seule boutique
+regleSchema.plugin(tenantPlugin, { scope: 'organisation' });
+regleSchema.add({ boutiqueCible: { type: mongoose.Schema.Types.ObjectId, ref: 'Boutique', default: null } });
+regleSchema.index({ organisation: 1, actif: 1, validFrom: 1 });
 
 regleSchema.pre('validate', function () {
   const targets = [this.article, this.categorie, this.typeArticle, this.panne].filter(Boolean);

@@ -3,10 +3,11 @@ const Commission = require('../models/Commission');
 const EcritureRemuneration = require('../models/EcritureRemuneration');
 const PaiementReparateur = require('../models/PaiementReparateur');
 const ContratReparateur = require('../models/ContratReparateur');
-const DeclarationJournaliere = require('../models/DeclarationJournaliere');
 const Reparation = require('../models/Reparation');
 const Cloture = require('../models/Cloture');
 const User = require('../models/User');
+const Boutique = require('../models/Boutique');
+const { getTenant, runAsSystem } = require('../config/tenantContext');
 const money = require('../utils/money');
 const commissionService = require('./commissionService');
 const { requireBoutiqueId } = require('./atelierService');
@@ -36,10 +37,15 @@ const sumBy = async (Model, match, groupKey, field = '$montant') => {
 const soldes = async ({ from, to, reparateurs = null }) => {
   const repF = reparateurs ? { reparateur: { $in: reparateurs.map(oid) } } : {};
   const inP = (field) => ({ [field]: { $gte: from, $lte: to } });
+  // ✅ Commissions (enregistrées par boutique) : toutes les boutiques de la SOCIÉTÉ
+  const org = getTenant()?.organisation;
+  const comSociete = (match, group) => (org
+    ? runAsSystem(() => sumBy(Commission, { organisation: oid(org), ...match }, group))
+    : sumBy(Commission, match, group));
 
   const [comP, comG, ecrP, ecrG, payP, payG] = await Promise.all([
-    sumBy(Commission, { ...repF, ...inP('dateSource'), statut: { $in: ['calculee', 'validee'] } }, { r: '$reparateur', s: '$statut' }),
-    sumBy(Commission, { ...repF, statut: 'validee' }, { r: '$reparateur' }),
+    comSociete({ ...repF, ...inP('dateSource'), statut: { $in: ['calculee', 'validee'] } }, { r: '$reparateur', s: '$statut', b: '$boutique' }),
+    comSociete({ ...repF, statut: 'validee' }, { r: '$reparateur' }),
     sumBy(EcritureRemuneration, { ...repF, ...inP('date'), statut: 'validee' }, { r: '$reparateur', t: '$type' }),
     sumBy(EcritureRemuneration, { ...repF, statut: 'validee' }, { r: '$reparateur' }),
     sumBy(PaiementReparateur, { ...repF, ...inP('date'), statut: 'validee' }, { r: '$reparateur', t: '$type' }),
@@ -54,13 +60,21 @@ const soldes = async ({ from, to, reparateurs = null }) => {
         reparateur: k,
         periode: { commissionsValidees: 0, commissionsEnAttente: 0, salaires: 0, primes: 0, ajustements: 0, gainsBruts: 0, avances: 0, paiements: 0 },
         cumul: { gainsBruts: 0, avances: 0, paiements: 0, soldeDu: 0 },
+        parBoutique: new Map(), // commissions de la période, détaillées par boutique
       });
     }
     return map.get(k);
   };
   const add = (o, k, v) => { o[k] = money.sum([o[k], v]); };
 
-  comP.forEach((x) => add(get(x._id.r).periode, x._id.s === 'validee' ? 'commissionsValidees' : 'commissionsEnAttente', x.total));
+  comP.forEach((x) => {
+    const row = get(x._id.r);
+    const k = x._id.s === 'validee' ? 'commissionsValidees' : 'commissionsEnAttente';
+    add(row.periode, k, x.total);
+    const b = sid(x._id.b);
+    if (!row.parBoutique.has(b)) row.parBoutique.set(b, { boutique: b, commissionsValidees: 0, commissionsEnAttente: 0 });
+    add(row.parBoutique.get(b), k, x.total);
+  });
   comG.forEach((x) => add(get(x._id.r).cumul, 'gainsBruts', x.total));
   ecrP.forEach((x) => add(get(x._id.r).periode, { salaire: 'salaires', prime: 'primes', ajustement: 'ajustements' }[x._id.t], x.total));
   ecrG.forEach((x) => add(get(x._id.r).cumul, 'gainsBruts', x.total));
@@ -70,12 +84,17 @@ const soldes = async ({ from, to, reparateurs = null }) => {
   const ids = [...map.keys()];
   const users = await User.find({ _id: { $in: ids } }).select('firstName lastName username role').lean();
   const names = new Map(users.map((u) => [sid(u._id), `${u.firstName} ${u.lastName}`.trim() || u.username]));
+  const bIds = [...new Set([...map.values()].flatMap((r) => [...r.parBoutique.keys()]).filter(Boolean))];
+  const shops = new Map((await Boutique.find({ _id: { $in: bIds } }).select('nom code').lean()).map((b) => [sid(b._id), b]));
 
   return [...map.values()].map((r) => {
     const p = r.periode;
     p.gainsBruts = money.sum([p.commissionsValidees, p.salaires, p.primes, p.ajustements]);
     r.cumul.soldeDu = money.sub(r.cumul.gainsBruts, money.sum([r.cumul.avances, r.cumul.paiements]));
-    return { ...r, nom: names.get(r.reparateur) || '—' };
+    const parBoutique = [...r.parBoutique.values()].map((x) => ({
+      ...x, nom: shops.get(x.boutique)?.nom || '—', code: shops.get(x.boutique)?.code || '',
+    }));
+    return { ...r, parBoutique, nom: names.get(r.reparateur) || '—' };
   }).sort((a, b) => a.nom.localeCompare(b.nom));
 };
 
@@ -84,8 +103,9 @@ const genererSalaires = async (periode, userId) => {
   if (!isPeriode(periode)) throw new AppError('Période invalide (YYYY-MM)');
   const boutique = requireBoutiqueId();
   const [start, end] = moisBounds(periode);
+  // ✅ Contrats de la société rattachés à CETTE boutique (le salaire n'est généré qu'une fois)
   const contrats = await ContratReparateur.find({
-    boutique, mode: { $in: ['salaire', 'mixte'] }, validFrom: { $lte: end },
+    boutiqueRattachement: boutique, mode: { $in: ['salaire', 'mixte'] }, validFrom: { $lte: end },
     $or: [{ validTo: null }, { validTo: { $gte: start } }],
   }).lean();
 
@@ -127,12 +147,6 @@ const journal = async (from, to) => {
       q: { $sum: '$piecesStock.quantite' }, c: { $sum: { $ifNull: ['$piecesStock.coutTotal', 0] } },
     } },
   ]);
-  const decl = await DeclarationJournaliere.aggregate([
-    { $match: { date: { $gte: from, $lte: to }, statut: { $in: ['validee', 'cloturee'] } } },
-    { $unwind: '$lignes' },
-    { $match: { 'lignes.statut': 'active' } },
-    { $group: { _id: '$reparateur', q: { $sum: '$lignes.quantite' }, c: { $sum: { $ifNull: ['$lignes.coutTotal', 0] } } } },
-  ]);
   const sold = await soldes({ from, to });
   const rows = new Map();
   const row = (id) => {
@@ -141,7 +155,7 @@ const journal = async (from, to) => {
     if (!rows.has(k)) rows.set(k, { reparateur: k, consommations: 0, coutPieces: 0, commissions: 0, salaires: 0, primes: 0, avances: 0, paiements: 0 });
     return rows.get(k);
   };
-  for (const p of [...pieces, ...decl]) {
+  for (const p of pieces) {
     const r = row(p._id);
     if (!r) continue;
     r.consommations += p.q;
@@ -189,14 +203,9 @@ const cloturerJour = async (jour, userId) => {
   const boutique = requireBoutiqueId();
   const already = await Cloture.exists({ boutique, type: 'journaliere', periode: jour, statut: 'cloturee' });
   if (already) throw new AppError('Journée déjà clôturée', 409, 'DEJA_CLOTUREE');
-  const brouillons = await DeclarationJournaliere.countDocuments({ boutique, jour, statut: 'brouillon' });
-  if (brouillons > 0) {
-    throw new AppError(`${brouillons} déclaration(s) en brouillon pour ce jour : validez-les ou annulez-les avant la clôture.`, 409);
-  }
   const [d0, d1] = jourBounds(jour);
   const calcul = await commissionService.calculerPeriode({ from: d0, to: d1, userId });
   const validees = await commissionService.valider({ boutique, dateSource: { $gte: d0, $lte: d1 } }, userId);
-  await DeclarationJournaliere.updateMany({ boutique, jour, statut: 'validee' }, { $set: { statut: 'cloturee' } });
   const data = await journal(d0, d1);
   data.totaux = { ...data.totaux, commissionsValidees: validees, alertes: calcul.alertes.length };
   const cloture = await enregistrerCloture({ type: 'journaliere', periode: jour, data, userId });
@@ -210,15 +219,9 @@ const cloturerMois = async (periode, userId) => {
   const already = await Cloture.exists({ boutique, type: 'mensuelle', periode, statut: 'cloturee' });
   if (already) throw new AppError('Mois déjà clôturé', 409, 'DEJA_CLOTUREE');
   const [d0, d1] = moisBounds(periode);
-  const brouillons = await DeclarationJournaliere.countDocuments({ boutique, date: { $gte: d0, $lte: d1 }, statut: 'brouillon' });
-  if (brouillons > 0) throw new AppError(`${brouillons} déclaration(s) en brouillon dans le mois.`, 409);
   const salaires = await genererSalaires(periode, userId);
   const calcul = await commissionService.calculerPeriode({ from: d0, to: d1, userId });
   const validees = await commissionService.valider({ boutique, dateSource: { $gte: d0, $lte: d1 } }, userId);
-  await DeclarationJournaliere.updateMany(
-    { boutique, date: { $gte: d0, $lte: d1 }, statut: 'validee' },
-    { $set: { statut: 'cloturee' } }
-  );
   const data = await journal(d0, d1);
   data.totaux = { ...data.totaux, salairesGeneres: salaires, commissionsValidees: validees, alertes: calcul.alertes.length };
   const cloture = await enregistrerCloture({ type: 'mensuelle', periode, data, userId });
@@ -233,15 +236,6 @@ const rouvrir = async (id, motif, userId) => {
   c.statut = 'rouverte';
   c.historique.push({ action: 'reouverture', par: userId, motif });
   await c.save();
-  // Les déclarations figées par cette clôture redeviennent « validées » (annulables / corrigeables),
-  // sauf si la période reste couverte par une autre clôture active (jour dans un mois clôturé, etc.).
-  const [d0, d1] = c.type === 'journaliere' ? jourBounds(c.periode) : moisBounds(c.periode);
-  const decls = await DeclarationJournaliere.find({ boutique: c.boutique, date: { $gte: d0, $lte: d1 }, statut: 'cloturee' })
-    .select('date').lean();
-  const { isPeriodeCloturee } = require('./atelierService');
-  const aRouvrir = [];
-  for (const d of decls) if (!(await isPeriodeCloturee(c.boutique, d.date))) aRouvrir.push(d._id);
-  if (aRouvrir.length) await DeclarationJournaliere.updateMany({ _id: { $in: aRouvrir } }, { $set: { statut: 'validee' } });
   return c;
 };
 

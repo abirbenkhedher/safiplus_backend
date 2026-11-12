@@ -1,11 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/permissions');
+const { requirePermission, requireAnyPermission } = require('../middleware/permissions');
 const userController = require('../controllers/userController');
 
 // ✅ Route pour récupérer les modules disponibles (accessible à tous les authentifiés)
 router.get('/meta/modules', requireAuth, userController.getAvailableModules);
+// ✅ Annuaire léger (nom, rôle) pour les écrans réparations / catégories / historique,
+//    sans la permission « Utilisateurs » (déclaré AVANT '/:id')
+router.get('/annuaire', requireAuth, requireAnyPermission(['users', 'reparations', 'categories', 'history']), userController.annuaire);
 
 // ✅ Routes avec permission granulaire "users"
 router.get('/', requireAuth, requirePermission('users'), userController.getAll);

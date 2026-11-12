@@ -2,7 +2,7 @@ const Reparation = require('../models/Reparation');
 const Commission = require('../models/Commission');
 const RegleCommission = require('../models/RegleCommission');
 const ContratReparateur = require('../models/ContratReparateur');
-const DeclarationJournaliere = require('../models/DeclarationJournaliere');
+const Boutique = require('../models/Boutique');
 const Stock = require('../models/Stock');
 const money = require('../utils/money');
 const logger = require('../config/logger');
@@ -38,7 +38,7 @@ const specificite = (r) => {
   let t = 0;
   if (r.article) t = 4;
   else if (r.categorie || r.typeArticle || r.panne) t = 2;
-  return t + (r.reparateur ? 1 : 0);
+  return t + (r.reparateur ? 1 : 0) + (r.boutiqueCible ? 0.5 : 0); // ✅ exception boutique prioritaire
 };
 
 // Date « jour seul » saisie sans heure (stockée à 00:00 UTC) → début du jour en heure locale.
@@ -52,9 +52,10 @@ const estValide = (r, date) =>
   r.actif !== false && debutJour(r.validFrom) <= date && (!r.validTo || new Date(r.validTo) >= date);
 
 /** Règle la plus spécifique applicable (ou null). */
-const resoudreRegle = (rules, { reparateur, stock, panne, date, niveau }) => {
+const resoudreRegle = (rules, { reparateur, stock, panne, date, niveau, boutique }) => {
   const cands = rules.filter((r) => {
     if (!estValide(r, date) || niveauRegle(r) !== niveau) return false;
+    if (r.boutiqueCible && boutique && sid(r.boutiqueCible) !== sid(boutique)) return false;
     if (r.reparateur && sid(r.reparateur) !== sid(reparateur)) return false;
     if (niveau === 'article') {
       if (r.article) return sid(r.article) === sid(stock?._id);
@@ -122,10 +123,13 @@ const buildCtxFactory = () => {
   const getCtx = async (boutiqueId) => {
     const key = sid(boutiqueId);
     if (!cache.has(key)) {
+      // ✅ Règles et contrats : communs à la SOCIÉTÉ de la boutique
+      const shop = await Boutique.findById(boutiqueId).select('organisation').lean();
+      const org = shop?.organisation;
       const [params, rules, contrats] = await Promise.all([
         getParametres(boutiqueId),
-        RegleCommission.find({ boutique: boutiqueId, actif: true }).lean(),
-        ContratReparateur.find({ boutique: boutiqueId }).lean(),
+        RegleCommission.find({ organisation: org, actif: true, $or: [{ boutiqueCible: null }, { boutiqueCible: boutiqueId }] }).lean(),
+        ContratReparateur.find({ organisation: org }).lean(),
       ]);
       cache.set(key, { params, rules, contrats, boutique: boutiqueId });
     }
@@ -151,10 +155,10 @@ const modeContrat = (ctx, reparateur, date) => {
 // ------------------------------------------------------------
 // Souhaits (sources) d'une ligne consommée
 // ------------------------------------------------------------
-const souhaitLigne = async (f, ctx, { cleBase, sourceType, reparation, declaration, ligne, reparateur, part, date }) => {
+const souhaitLigne = async (f, ctx, { cleBase, sourceType, reparation, ligne, reparateur, part, date }) => {
   const stock = await f.getStock(ligne.stock);
   if (!stock || stock.commissionActive === false) return null;
-  const rule = resoudreRegle(ctx.rules, { reparateur, stock, date, niveau: 'article' });
+  const rule = resoudreRegle(ctx.rules, { boutique: ctx.boutique, reparateur, stock, date, niveau: 'article' });
   if (!rule) {
     f.alertes.push({ type: 'AUCUNE_REGLE', cleBase, reparateur, article: sid(stock._id), message: `Aucune règle applicable (article ${stock.code || sid(stock._id)})` });
     return null;
@@ -164,7 +168,7 @@ const souhaitLigne = async (f, ctx, { cleBase, sourceType, reparation, declarati
   const pvHT = toHT(ctx.params, money.mul(pv, q));
   const cout = ligne.coutTotal ?? money.mul(coutReference(stock).cout, q);
   return {
-    cleBase, sourceType, reparation, declaration, sourceLigneId: ligne._id,
+    cleBase, sourceType, reparation, sourceLigneId: ligne._id,
     article: stock._id, panne: null, reparateur, dateSource: date, quantite: q, part, rule,
     bases: { prix_vente: pvHT, cout_achat: cout, marge: money.sub(pvHT, cout), main_oeuvre: 0 },
   };
@@ -204,7 +208,7 @@ const souhaitsReparation = async (f, rep) => {
     for (const p of pieces) {
       const s = await souhaitLigne(f, ctx, {
         cleBase: `P:${sid(rep._id)}:${sid(p._id)}:${reparateur}`, sourceType: 'PIECE_REPARATION',
-        reparation: rep._id, declaration: null, ligne: p, reparateur, part, date,
+        reparation: rep._id, ligne: p, reparateur, part, date,
       });
       if (s) out.push(s);
     }
@@ -212,12 +216,12 @@ const souhaitsReparation = async (f, rep) => {
     const pannes = [...new Set((rep.panneType || []).map(norm).filter(Boolean))];
     let unique = null;
     for (const panne of pannes.length ? pannes : ['']) {
-      const rule = resoudreRegle(ctx.rules, { reparateur, panne, date, niveau: 'intervention' });
+      const rule = resoudreRegle(ctx.rules, { boutique: ctx.boutique, reparateur, panne, date, niveau: 'intervention' });
       if (!rule) continue;
       if (rule.typeCalcul === 'forfait_intervention') {
         out.push({
           cleBase: `I:${sid(rep._id)}:${panne || '*'}:${reparateur}`, sourceType: 'INTERVENTION',
-          reparation: rep._id, declaration: null, sourceLigneId: null, article: null, panne: panne || null,
+          reparation: rep._id, sourceLigneId: null, article: null, panne: panne || null,
           reparateur, dateSource: date, quantite: 1, part, rule, bases: basesInterv,
         });
       } else if (!unique || specificite(rule) > specificite(unique)) {
@@ -227,35 +231,13 @@ const souhaitsReparation = async (f, rep) => {
     if (unique) {
       out.push({
         cleBase: `I:${sid(rep._id)}:*:${reparateur}:${unique.typeCalcul}`, sourceType: 'INTERVENTION',
-        reparation: rep._id, declaration: null, sourceLigneId: null, article: null, panne: unique.panne || null,
+        reparation: rep._id, sourceLigneId: null, article: null, panne: unique.panne || null,
         reparateur, dateSource: date, quantite: 1, part, rule: unique, bases: basesInterv,
       });
     }
     if (out.length === avant && !pieces.length) {
       f.alertes.push({ type: 'AUCUNE_REGLE', reparation: sid(rep._id), reparateur, message: `Réparation ${rep.numero} : aucune règle de commission applicable` });
     }
-  }
-  return out;
-};
-
-const souhaitsDeclaration = async (f, decl) => {
-  if (!decl || !['validee', 'cloturee'].includes(decl.statut)) return [];
-  const ctx = await f.getCtx(decl.boutique);
-  const reparateur = sid(decl.reparateur);
-  const date = new Date(decl.date);
-  if (modeContrat(ctx, reparateur, date) === 'salaire') return [];
-  const out = [];
-  for (const l of decl.lignes || []) {
-    if (l.statut !== 'active') continue;
-    if (l.reparation && !ctx.params.commissionSurSAV) {
-      const isSav = await Reparation.exists({ _id: l.reparation, isSAV: true });
-      if (isSav) continue;
-    }
-    const s = await souhaitLigne(f, ctx, {
-      cleBase: `D:${sid(decl._id)}:${sid(l._id)}`, sourceType: 'LIGNE_DECLARATION',
-      reparation: l.reparation || null, declaration: decl._id, ligne: l, reparateur, part: 100, date,
-    });
-    if (s) out.push(s);
   }
   return out;
 };
@@ -316,7 +298,7 @@ const reconcilier = async (f, souhaits, scopeFilter, userId) => {
           const n = list.filter((e) => !e.annule).length + 1;
           await Commission.create({
             boutique: ctx.boutique, reparateur: s.reparateur, sourceType: s.sourceType,
-            reparation: s.reparation, declaration: s.declaration, sourceLigneId: s.sourceLigneId,
+            reparation: s.reparation, sourceLigneId: s.sourceLigneId,
             article: s.article, panne: s.panne, cleBase, cleSource: `${cleBase}#${n}`,
             dateSource, periode: periodeKey(dateSource), quantite: s.quantite, partPourcentage: s.part,
             regle: s.rule._id, regleSnapshot: snapshotRegle(s.rule), baseMontant, montant,
@@ -345,7 +327,7 @@ const reconcilier = async (f, souhaits, scopeFilter, userId) => {
           const now = new Date();
           await Commission.create({
             boutique: active.boutique, reparateur: active.reparateur, sourceType: active.sourceType,
-            reparation: active.reparation, declaration: active.declaration, sourceLigneId: active.sourceLigneId,
+            reparation: active.reparation, sourceLigneId: active.sourceLigneId,
             article: active.article, panne: active.panne, cleBase, cleSource: `${active.cleSource}:annul`,
             dateSource: now, periode: periodeKey(now), quantite: -active.quantite,
             partPourcentage: active.partPourcentage, regle: active.regle, regleSnapshot: active.regleSnapshot,
@@ -390,39 +372,18 @@ const syncReparationSafe = (reparationId, userId) =>
   syncReparation(reparationId, userId).catch((err) =>
     logger.error(`Commission sync réparation ${reparationId}:`, err));
 
-const syncDeclaration = async (declarationId, userId) => {
-  const f = buildCtxFactory();
-  const decl = await DeclarationJournaliere.findById(declarationId).lean();
-  if (!decl) return { alertes: [] };
-  const souhaits = (await souhaitsDeclaration(f, decl)).map((s) => ({ ...s, boutique: decl.boutique }));
-  const stats = await reconcilier(f, souhaits, { declaration: decl._id }, userId);
-  return { ...stats, alertes: f.alertes };
-};
-
 /** Calcul (idempotent) de toutes les commissions d'une période. */
 const calculerPeriode = async ({ from, to, reparateur = null, userId }) => {
   const total = { crees: 0, recalculees: 0, annulees: 0, contrePassations: 0, alertes: [] };
   const repFilter = { $or: [{ dateCloture: { $gte: from, $lte: to } }] };
   const fromCommissions = await Commission.distinct('reparation', {
-    dateSource: { $gte: from, $lte: to }, reparation: { $ne: null }, declaration: null,
+    dateSource: { $gte: from, $lte: to }, reparation: { $ne: null },
   });
   if (fromCommissions.length) repFilter.$or.push({ _id: { $in: fromCommissions } });
   const repIds = await Reparation.distinct('_id', repFilter);
 
   for (const id of repIds) {
     const r = await syncReparation(id, userId);
-    addStats(total, { crees: r.crees || 0, recalculees: r.recalculees || 0, annulees: r.annulees || 0, contrePassations: r.contrePassations || 0 });
-    total.alertes.push(...(r.alertes || []));
-  }
-
-  const declIds = await DeclarationJournaliere.distinct('_id', {
-    $or: [
-      { date: { $gte: from, $lte: to } },
-      { _id: { $in: await Commission.distinct('declaration', { dateSource: { $gte: from, $lte: to }, declaration: { $ne: null } }) } },
-    ],
-  });
-  for (const id of declIds) {
-    const r = await syncDeclaration(id, userId);
     addStats(total, { crees: r.crees || 0, recalculees: r.recalculees || 0, annulees: r.annulees || 0, contrePassations: r.contrePassations || 0 });
     total.alertes.push(...(r.alertes || []));
   }
@@ -443,5 +404,5 @@ const valider = async (filter, userId) => {
 module.exports = {
   resoudreRegle, calculerMontant, specificite, niveauRegle, NIVEAUX, repartition,
   prixTotalReparation, toHT,
-  syncReparation, syncReparationSafe, syncDeclaration, calculerPeriode, valider,
+  syncReparation, syncReparationSafe, calculerPeriode, valider,
 };

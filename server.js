@@ -30,7 +30,6 @@ const organisationRoutes = require('./src/routes/organisationRoutes');
 const boutiqueRoutes = require('./src/routes/boutiqueRoutes');
 // ✅ Module atelier (cahier des charges V1.1)
 const atelierRoutes = require('./src/routes/atelierRoutes');
-const declarationRoutes = require('./src/routes/declarationRoutes');
 const remunerationRoutes = require('./src/routes/remunerationRoutes');
 const rapportsRoutes = require('./src/routes/rapportsRoutes');
 
@@ -83,7 +82,6 @@ app.use('/api/typearticles',typeArticleRoutes);
 app.use('/api/organisations', organisationRoutes);
 app.use('/api/boutiques', boutiqueRoutes);
 app.use('/api/atelier', atelierRoutes);
-app.use('/api/declarations', declarationRoutes);
 app.use('/api/remuneration', remunerationRoutes);
 app.use('/api/rapports', rapportsRoutes);
 

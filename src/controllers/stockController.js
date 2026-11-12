@@ -1,4 +1,5 @@
 const Stock = require('../models/Stock');
+const User = require('../models/User');
 const MouvementStock = require('../models/MouvementStock');
 const Reparation = require('../models/Reparation');
 const Categorie = require('../models/Categorie');
@@ -9,7 +10,6 @@ const TypeArticle = require('../models/TypeArticle');
 const logger = require('../config/logger');
 const mongoose = require('mongoose');
 const LotStock = require('../models/LotStock');
-const DeclarationJournaliere = require('../models/DeclarationJournaliere');
 const valorisation = require('../services/valorisationService');
 const commissionService = require('../services/commissionService');
 const { withTransaction, so } = require('../services/transaction');
@@ -480,9 +480,6 @@ exports.consommerPourReparation = async (req, res) => {
     if (!reparation || reparation.isDeleted) throw new AppError('Réparation non trouvée', 404);
 
     const params = await getParametres(reparation.boutique, session);
-    if (params.modeSaisieConsommation === 'journaliere') {
-      throw new AppError('Dans cette boutique, les consommations se saisissent par déclaration journalière.', 409);
-    }
     await assertPeriodeOuverte(reparation.boutique, new Date(), session);
 
     const stockBefore = await populateStock(Stock.findById(stockId)).session(session || null);
@@ -491,22 +488,13 @@ exports.consommerPourReparation = async (req, res) => {
     if (String(stockBefore.boutique) !== String(reparation.boutique)) {
       throw new AppError("Cette pièce appartient au stock d'une autre boutique");
     }
-    // ✅ Anti-doublon (§6.3) : pièce déjà déclarée pour ce dossier dans une déclaration journalière
-    const dejaDeclaree = await DeclarationJournaliere.findOne({
-      statut: { $in: ['validee', 'cloturee'] },
-      lignes: { $elemMatch: { reparation: reparation._id, stock: stockBefore._id, statut: 'active' } },
-    }).select('jour').session(session || null).lean();
-    if (dejaDeclaree) {
-      throw new AppError(`Pièce déjà déclarée pour ce dossier (déclaration du ${dejaDeclaree.jour}).`, 409, 'DOUBLON');
-    }
-
     const out = await valorisation.sortie({
       stockId, quantite: qte, params, session, userId, type: 'RETRAIT_REPARATION',
       motif: `Consommation pour ${reparation.numero}`, reparationId: reparation._id,
       sourceType: 'Reparation', sourceId: reparation._id, coutManuel,
     });
 
-    const tech = reparateur || reparation.reparateur || (req.user.role === 'REPARATEUR' ? userId : null);
+    const tech = reparateur || reparation.reparateur || (User.ROLES_REPARATEUR.includes(req.user.role) ? userId : null) // ✅ réparateur ou commercial;
     reparation.piecesStock = reparation.piecesStock || [];
     reparation.piecesStock.push({
       stock: stockBefore._id,

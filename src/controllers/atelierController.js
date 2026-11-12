@@ -10,7 +10,7 @@ const { AppError } = require('../utils/appError');
 // ✅ PARAMÈTRES DE LA BOUTIQUE
 // ============================================================
 const EDITABLE = [
-  'modeSaisieConsommation', 'lienDeclarationReparation', 'methodeValorisation',
+  'methodeValorisation',
   'prixTTC', 'tauxTVA', 'remisesDeduites', 'commissionSurSAV', 'periodicitePaie',
 ];
 
@@ -22,8 +22,6 @@ exports.getParametres = async (req, res) => {
     data,
     options: {
       modeStock: ParametresAtelier.MODES_STOCK,
-      modeSaisieConsommation: ParametresAtelier.MODES_SAISIE,
-      lienDeclarationReparation: ParametresAtelier.LIENS_DECLARATION,
       methodeValorisation: ParametresAtelier.VALORISATIONS,
     },
   });
