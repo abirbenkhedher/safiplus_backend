@@ -32,6 +32,8 @@ const boutiqueRoutes = require('./src/routes/boutiqueRoutes');
 const atelierRoutes = require('./src/routes/atelierRoutes');
 const remunerationRoutes = require('./src/routes/remunerationRoutes');
 const rapportsRoutes = require('./src/routes/rapportsRoutes');
+const venteRoutes = require('./src/routes/venteRoutes'); // ✅ gestion commerciale
+const caisseRoutes = require('./src/routes/caisseRoutes'); // ✅ caisse + rapport commercial
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -84,6 +86,10 @@ app.use('/api/boutiques', boutiqueRoutes);
 app.use('/api/atelier', atelierRoutes);
 app.use('/api/remuneration', remunerationRoutes);
 app.use('/api/rapports', rapportsRoutes);
+app.use('/api/ventes', venteRoutes.ventes);
+app.use('/api/reglements', venteRoutes.reglements);
+app.use('/api/caisse', caisseRoutes.caisse);
+app.use('/api/rapport-commercial', caisseRoutes.rapport);
 
 // Error handler
 app.use(errorHandler);

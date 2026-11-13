@@ -88,7 +88,11 @@ exports.create = async (req, res) => {
       return res.status(400).json({ success: false, message: "Ce nom d'utilisateur est déjà utilisé" });
     }
 
-    org = await Organisation.create({ nom, telephone, email, adresse, maxBoutiques });
+    org = await Organisation.create({
+      nom, telephone, email, adresse, maxBoutiques,
+      // ✅ Formule : gestion commerciale incluse ou non (défaut : incluse)
+      modules: { commercial: req.body?.modules?.commercial !== false },
+    });
 
     const boutiqueNom = boutique.nom || nom;
     shop = await Boutique.create({
@@ -138,6 +142,10 @@ exports.update = async (req, res) => {
     const fields = ['nom', 'telephone', 'email', 'adresse', 'maxBoutiques', 'isActive'];
     for (const f of fields) {
       if (req.body[f] !== undefined) org[f] = req.body[f];
+    }
+    // ✅ Modules souscrits (super admin)
+    if (req.body.modules && typeof req.body.modules.commercial === 'boolean') {
+      org.set('modules.commercial', req.body.modules.commercial);
     }
     await org.save();
 

@@ -13,6 +13,7 @@ const commissionService = require('../services/commissionService');
 const { getParametres } = require('../services/atelierService');
 const pdfService = require('../services/pdfService');
 const smsService = require('../services/smsService');
+const venteService = require('../services/venteService');
 
 // ✅ Statuts : libellés normalisés (accents, tirets, réparé/réparée...)
 const { isStatutNonRepare, doitEtreCloturee } = require('../utils/statutReparation');
@@ -814,6 +815,10 @@ exports.update = async (req, res) => {
       dateCloture: dateClotureOverride, // ✅ NOUVEAU
     } = req.body;
 
+    // ✅ Gestion commerciale : prix et client figés une fois la réparation facturée
+    const prixTotalAvant = computePrixTotal(reparation);
+    const clientAvant = String(reparation.client || '');
+
     console.log('🔍 [UPDATE] req.user.role =', req.user?.role);
     console.log('🔍 [UPDATE] dateModification reçue =', dateModification);
     console.log('🔍 [UPDATE] dateClotureOverride reçue =', dateClotureOverride);
@@ -987,6 +992,18 @@ exports.update = async (req, res) => {
             : (newDecision.enregistrePar || oldDecision.enregistrePar || null),
         },
       };
+    }
+
+    if (Math.round(computePrixTotal(reparation) * 1000) !== Math.round(prixTotalAvant * 1000)
+      || String(reparation.client || '') !== clientAvant) {
+      const facture = await venteService.factureActiveDeReparation(reparation._id);
+      if (facture) {
+        return res.status(409).json({
+          success: false,
+          code: 'DEJA_FACTUREE',
+          message: `Réparation facturée (${facture.numero}) : le prix et le client ne sont plus modifiables. Faites un avoir.`,
+        });
+      }
     }
 
     // ✅ Clôture : date saisie par l'admin prioritaire, sinon clôture automatique

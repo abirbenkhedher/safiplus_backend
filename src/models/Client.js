@@ -59,6 +59,18 @@ const clientSchema = new mongoose.Schema({
     trim: true,
     default: null
   },
+  // ✅ Gestion commerciale : client professionnel (factures)
+  matriculeFiscal: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  // ✅ Client technique des ventes comptoir sans client (un par organisation)
+  comptoir: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
   isActive: {
     type: Boolean,
     default: true

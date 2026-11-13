@@ -26,6 +26,9 @@ type: {
     'TRANSFERT_SORTIE',
     'TRANSFERT_ENTREE',
     'INVENTAIRE',
+    // ✅ Gestion commerciale
+    'SORTIE_VENTE',
+    'RETOUR_VENTE',
   ],
   required: true,
   index: true,

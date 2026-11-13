@@ -15,6 +15,11 @@ const DEFAULTS = {
   remisesDeduites: true,
   commissionSurSAV: false,
   periodicitePaie: 'mensuelle',
+  commerce: {
+    raisonSociale: '', matriculeFiscal: '', registreCommerce: '', adresse: '', telephone: '',
+    email: '', rib: '', piedPage: '', timbreFiscal: 1, validiteDevisJours: 15, delaiPaiementJours: 0,
+    caisseObligatoire: false,
+  },
 };
 
 /** Boutique active de la requête (obligatoire pour les écritures). */

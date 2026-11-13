@@ -14,6 +14,9 @@ const { runWithTenant } = require('../config/tenantContext');
 // - Autres : uniquement les boutiques qui lui sont affectées
 // - En-tête "X-Boutique-Id" : boutique active (ou "all" = toutes)
 // ============================================================
+/** Modules souscrits par l'organisation (absent = actif, compatibilité). */
+const modulesOf = (org) => ({ commercial: org?.modules?.commercial !== false });
+
 const buildTenantContext = async (user, req) => {
   if (user.role === 'SUPER_ADMIN') {
     // Sans boutique choisie → backoffice (contexte "system")
@@ -34,9 +37,11 @@ const buildTenantContext = async (user, req) => {
       };
     }
     const siblings = await Boutique.find({ organisation: shop.organisation }).select('_id').lean();
+    const shopOrg = await Organisation.findById(shop.organisation).select('modules').lean();
     return {
       ok: true,
       ctx: {
+        modules: modulesOf(shopOrg),
         organisation: shop.organisation,
         boutiques: [shop._id],
         boutique: shop._id,
@@ -51,7 +56,7 @@ const buildTenantContext = async (user, req) => {
     return { ok: false, status: 403, message: 'Aucune organisation associée à ce compte.' };
   }
 
-  const org = await Organisation.findById(user.organisation).select('isActive').lean();
+  const org = await Organisation.findById(user.organisation).select('isActive modules').lean();
   if (!org || !org.isActive) {
     return { ok: false, status: 403, message: 'Organisation désactivée. Contactez le support.' };
   }
@@ -95,6 +100,7 @@ const buildTenantContext = async (user, req) => {
   return {
     ok: true,
     ctx: {
+      modules: modulesOf(org),
       organisation: new mongoose.Types.ObjectId(String(user.organisation)),
       boutiques: visible,
       boutique: active,

@@ -44,6 +44,13 @@ const AVAILABLE_MODULES = [
   'clotures',               // clôtures journalières / mensuelles
   'clotures_rouvrir',
   'rapports',
+  // ✅ Gestion commerciale
+  'ventes',                  // devis, BL, factures, avoirs (saisie + validation)
+  'ventes:read',
+  'reglements',              // encaissements clients, relevés, créances
+  'comptoir',                // vente comptoir (ticket + encaissement immédiat)
+  'caisse',                  // ouverture / mouvements / fermeture de la caisse
+  'rapport_commercial',      // rapport commercial (CA, TVA, encaissements) + export Excel
 ];
 
 // ============================================================

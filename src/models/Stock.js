@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const tenantPlugin = require('./plugins/tenantPlugin');
 
+const USAGES = ['reparation', 'vente', 'mixte'];
+
 const stockSchema = new mongoose.Schema({
   categorie: {
     type: mongoose.Schema.Types.ObjectId,
@@ -54,6 +56,11 @@ const stockSchema = new mongoose.Schema({
   dernierCoutAchat: { type: Number, default: null, min: 0 },
   coutManuel: { type: Number, default: null, min: 0 },      // valorisation "coût manuel"
   commissionActive: { type: Boolean, default: true },
+  // ✅ Usage : pièce montée en réparation, produit revendu tel quel, ou les deux.
+  //    Absent (articles existants) = pièce de réparation.
+  usage: { type: String, enum: USAGES, default: 'reparation', index: true },
+  // ✅ TVA de vente propre à l'article (null = taux de la boutique)
+  tauxTVA: { type: Number, default: null, min: 0, max: 100 },
   isActive: { type: Boolean, default: true },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -79,4 +86,17 @@ stockSchema.index({ quantite: 1 });
 stockSchema.index({ categorie: 1 });
 stockSchema.index({ typeArticle: 1 });
 
-module.exports = mongoose.model('Stock', stockSchema);
+const Stock = mongoose.model('Stock', stockSchema);
+Stock.USAGES = USAGES;
+/** Filtre Mongo : articles utilisables en réparation / vendables (null = ancien article = réparation). */
+Stock.filtreUsage = (cible) => {
+  if (cible === 'reparation') return { usage: { $in: ['reparation', 'mixte', null] } };
+  if (cible === 'vente') return { usage: { $in: ['vente', 'mixte'] } };
+  return {};
+};
+/** true si l'article peut servir à cette cible. */
+Stock.utilisablePour = (stock, cible) => {
+  const u = stock?.usage || 'reparation';
+  return u === 'mixte' || u === cible;
+};
+module.exports = Stock;

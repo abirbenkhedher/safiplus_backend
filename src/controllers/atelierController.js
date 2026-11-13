@@ -12,6 +12,7 @@ const { AppError } = require('../utils/appError');
 const EDITABLE = [
   'methodeValorisation',
   'prixTTC', 'tauxTVA', 'remisesDeduites', 'commissionSurSAV', 'periodicitePaie',
+  'commerce', // ✅ en-tête des documents de vente
 ];
 
 exports.getParametres = async (req, res) => {

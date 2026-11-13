@@ -13,7 +13,8 @@
     "rattrapage:clotures": "node scripts/rattrapageClotures.js",
     "superadmin": "node scripts/superAdmin.js",
     "seed:pannes": "node scripts/seedPannes.js",
-    "test:atelier": "node scripts/testAtelier.js"
+    "test:atelier": "node scripts/testAtelier.js",
+    "test:ventes": "node scripts/testVentes.js"
   },
   "keywords": [],
   "author": "",

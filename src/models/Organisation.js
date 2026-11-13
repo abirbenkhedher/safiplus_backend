@@ -16,6 +16,11 @@ const organisationSchema = new mongoose.Schema({
   adresse: { type: String, trim: true, default: '' },
   // Nombre maximum de boutiques autorisées (0 = illimité)
   maxBoutiques: { type: Number, default: 0, min: 0 },
+  // ✅ Modules souscrits (formule SaaS). Gestion commerciale active par défaut
+  //    (comportement des organisations existantes inchangé).
+  modules: {
+    commercial: { type: Boolean, default: true },
+  },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 

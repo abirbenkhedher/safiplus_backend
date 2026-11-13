@@ -10,6 +10,7 @@ const historySchema = new mongoose.Schema({
       'Depense', 'Stock', 'Fournisseur', 'ParametresAtelier',
       'RegleCommission', 'ContratReparateur', 'Commission', 'EcritureRemuneration',
       'PaiementReparateur', 'Cloture',
+      'DocumentVente', 'Reglement', 'SessionCaisse', 'MouvementCaisse',
     ],
     required: true
   },

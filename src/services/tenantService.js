@@ -28,7 +28,9 @@ const getUserBoutiques = async (user) => {
 /** Organisation de l'utilisateur (document léger). */
 const getUserOrganisation = async (user) => {
   if (!user || !user.organisation) return null;
-  return Organisation.findById(user.organisation).select('nom isActive').lean();
+  const org = await Organisation.findById(user.organisation).select('nom isActive modules').lean();
+  if (org) org.modules = { commercial: org.modules?.commercial !== false };
+  return org;
 };
 
 /**

@@ -575,6 +575,7 @@ exports.create = async (req, res) => {
       phone: phone.trim(),
       adresse: adresse?.trim() || undefined,
       zone: zone?.trim() || undefined,
+      matriculeFiscal: String(req.body.matriculeFiscal || '').trim(),
     };
 
     if (codeFidelite && codeFidelite.trim()) {
@@ -665,6 +666,7 @@ exports.update = async (req, res) => {
     client.phone = phone || client.phone;
     client.adresse = adresse !== undefined ? adresse : client.adresse;
     client.zone = zone !== undefined ? zone : client.zone;
+    if (req.body.matriculeFiscal !== undefined) client.matriculeFiscal = String(req.body.matriculeFiscal || '').trim();
 
     if (codeFidelite !== undefined) {
       client.codeFidelite = codeFidelite

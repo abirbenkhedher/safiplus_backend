@@ -368,6 +368,8 @@ const reparationSchema = new mongoose.Schema({
     newValue: { type: mongoose.Schema.Types.Mixed },
     modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     modifiedAt: { type: Date, default: Date.now },
+    // ✅ 'reglement' = acompte reporté par un règlement (déjà compté en caisse)
+    source: { type: String, default: null },
   }],
 }, {
   timestamps: true,

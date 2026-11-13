@@ -77,7 +77,8 @@ exports.getAll = async (req, res) => {
       search, etat,
     } = req.query;
 
-    const query = {};
+    // ✅ usage=reparation | vente (inclut « les deux ») ; absent = tous
+    const query = { ...Stock.filtreUsage(req.query.usage) };
 
     const categorieClause = buildInClause(categorie);
     if (categorieClause) query.categorie = categorieClause;
@@ -154,19 +155,22 @@ exports.getAll = async (req, res) => {
 // ============================================================
 exports.getReferentiels = async (req, res) => {
   try {
-    const [categories, objets, marques, modeles, typesArticle] = await Promise.all([
-      Categorie.find({}).select('nom').sort({ nom: 1 }),
+    const Famille = require('../models/Famille');
+    const [categories, objets, marques, modeles, typesArticle, familles] = await Promise.all([
+      Categorie.find({}).select('nom famille').sort({ nom: 1 }),
       Objet.find({}).select('nom').sort({ nom: 1 }),
       Marque.find({}).select('nom objet').sort({ nom: 1 }),
       Modele.find({}).select('nom marque').sort({ nom: 1 }),
       TypeArticle.find({ isActive: true })
         .select('nom ordre')
         .sort({ ordre: 1, nom: 1 }),
+      Famille.find({}).select('nom').sort({ nom: 1 }),
     ]);
 
     res.json({
       success: true,
       data: {
+        familles,
         typesArticle,
         categories,
         objets,
@@ -218,9 +222,12 @@ exports.create = async (req, res) => {
       categorie, objet, typeArticle,
       marque, modele,
       quantite, seuilAlerte, prixIndicatif, observation,
-      code, unite, coutManuel, commissionActive, coutUnitaire,
+      code, unite, coutManuel, commissionActive, coutUnitaire, usage,
     } = req.body;
 
+    if (usage !== undefined && !Stock.USAGES.includes(usage)) {
+      return res.status(400).json({ success: false, message: 'Usage invalide (reparation, vente ou mixte)' });
+    }
     if (!categorie) {
       return res.status(400).json({ success: false, message: 'Catégorie obligatoire' });
     }
@@ -264,8 +271,11 @@ exports.create = async (req, res) => {
       unite: unite || 'pièce',
       coutManuel: coutManuel !== undefined && coutManuel !== null && coutManuel !== '' ? Number(coutManuel) : null,
       commissionActive: commissionActive !== false,
+      usage: usage || 'reparation',
+      tauxTVA: req.body.tauxTVA === undefined || req.body.tauxTVA === null || req.body.tauxTVA === '' ? null : Number(req.body.tauxTVA),
       // Valorisation initiale (si un coût unitaire est fourni)
       cmp: coutUnitaire !== undefined && coutUnitaire !== null && coutUnitaire !== '' ? money.round3(coutUnitaire) : null,
+      dernierCoutAchat: coutUnitaire !== undefined && coutUnitaire !== null && coutUnitaire !== '' ? money.round3(coutUnitaire) : null,
       cmpQuantiteBase: Number(quantite) || 0,
       createdBy: req.user.id,
     });
@@ -319,7 +329,18 @@ exports.update = async (req, res) => {
     if (unite !== undefined) stock.unite = unite;
     if (coutManuel !== undefined) stock.coutManuel = coutManuel === null || coutManuel === '' ? null : Number(coutManuel);
     if (commissionActive !== undefined) stock.commissionActive = !!commissionActive;
+    if (req.body.usage !== undefined) {
+      if (!Stock.USAGES.includes(req.body.usage)) {
+        return res.status(400).json({ success: false, message: 'Usage invalide (reparation, vente ou mixte)' });
+      }
+      stock.usage = req.body.usage;
+    }
     if (isActive !== undefined) stock.isActive = !!isActive;
+    if (req.body.tauxTVA !== undefined) {
+      const t = req.body.tauxTVA === null || req.body.tauxTVA === '' ? null : Number(req.body.tauxTVA);
+      if (t !== null && !(t >= 0 && t <= 100)) return res.status(400).json({ success: false, message: 'Taux de TVA invalide' });
+      stock.tauxTVA = t;
+    }
 
     const ancienneQuantite = stock.quantite;
 
@@ -488,6 +509,10 @@ exports.consommerPourReparation = async (req, res) => {
     if (String(stockBefore.boutique) !== String(reparation.boutique)) {
       throw new AppError("Cette pièce appartient au stock d'une autre boutique");
     }
+    // ✅ Un produit de vente seul (coque, câble…) ne se monte pas en réparation
+    if (!Stock.utilisablePour(stockBefore, 'reparation')) {
+      throw new AppError('Cet article est un produit de vente : changez son usage en « Les deux » pour l\'utiliser en réparation', 400, 'USAGE_ARTICLE');
+    }
     const out = await valorisation.sortie({
       stockId, quantite: qte, params, session, userId, type: 'RETRAIT_REPARATION',
       motif: `Consommation pour ${reparation.numero}`, reparationId: reparation._id,
@@ -641,7 +666,7 @@ exports.transfert = async (req, res) => {
       [dst] = await Stock.create([{
         ...combo, boutique: boutiqueDestination, quantite: 0, seuilAlerte: src.seuilAlerte,
         prixIndicatif: src.prixIndicatif, unite: src.unite,
-        commissionActive: src.commissionActive, createdBy: userId,
+        commissionActive: src.commissionActive, usage: src.usage || 'reparation', createdBy: userId,
       }], so(session));
     }
 

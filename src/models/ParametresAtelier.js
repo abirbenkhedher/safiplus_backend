@@ -25,6 +25,23 @@ const parametresSchema = new mongoose.Schema({
   // Paie
   periodicitePaie: { type: String, enum: ['mensuelle', 'hebdomadaire'], default: 'mensuelle' },
 
+  // ✅ Gestion commerciale : en-tête des documents de vente (par boutique)
+  commerce: {
+    raisonSociale: { type: String, trim: true, default: '' },
+    matriculeFiscal: { type: String, trim: true, default: '' },
+    registreCommerce: { type: String, trim: true, default: '' },
+    adresse: { type: String, trim: true, default: '' },
+    telephone: { type: String, trim: true, default: '' },
+    email: { type: String, trim: true, default: '' },
+    rib: { type: String, trim: true, default: '' },
+    piedPage: { type: String, trim: true, default: '' },
+    timbreFiscal: { type: Number, default: 1, min: 0 },
+    validiteDevisJours: { type: Number, default: 15, min: 0 },
+    delaiPaiementJours: { type: Number, default: 0, min: 0 },
+    // Espèces refusées tant qu'aucune caisse n'est ouverte
+    caisseObligatoire: { type: Boolean, default: false },
+  },
+
   // Historique des changements de mode de stock (§5 : validation explicite)
   historiqueModeStock: [{
     ancien: String,
