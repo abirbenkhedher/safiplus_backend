@@ -417,6 +417,28 @@ async function main() {
     await runAsSystem(async () => Organisation.updateOne({ _id: S.org._id }, { $set: { 'modules.commercial': true } }).exec());
     r = await api('GET', '/ventes', o());
     check('Module réactivé : accès rétabli', r.status === 200, r.status);
+
+    // ---------- Prix commerce TTC indépendant du réglage atelier ----------
+    r = await api('PUT', '/atelier/parametres', o({ body: { prixTTC: false, tauxTVA: 19 } }));
+    check('Atelier : prix de réparation/articles saisis HT', r.status === 200, r.body);
+    r = await api('POST', '/stock', o({ body: { categorie: S.cat._id, typeArticle: S.ta2._id, marque: S.mar._id, quantite: 5, prixIndicatif: 100, coutUnitaire: 20, code: 'TTC1', usage: 'vente' } }));
+    const art = r.body.data?._id;
+    r = await api('POST', '/ventes/comptoir', o({ body: { lignes: [{ stock: art, quantite: 1 }], paiements: [{ mode: 'ESPECES', montant: 200 }] } }));
+    const lt = r.body.data?.ticket;
+    check('Comptoir (commerce TTC par défaut, atelier HT) : prix saisis TTC, article 100 HT → 119 TTC', lt?.prixSaisis === 'TTC' && lt.lignes?.[0]?.prixUnitaire === 119 && lt.netAPayer === 119, lt);
+    r = await api('PUT', '/atelier/parametres', o({ body: { commerce: { prixTTC: false } } }));
+    r = await api('POST', '/ventes/comptoir', o({ body: { lignes: [{ stock: art, quantite: 1 }], paiements: [{ mode: 'ESPECES', montant: 200 }] } }));
+    const lh = r.body.data?.ticket;
+    check('Commerce HT : prix saisis HT, 100 HT → net 119', lh?.prixSaisis === 'HT' && lh.lignes?.[0]?.prixUnitaire === 100 && lh.netAPayer === 119, lh);
+
+    // ---------- Règlement daté « aujourd'hui » (date seule du formulaire) : après le ticket ----------
+    const n = new Date();
+    const auj = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+    r = await api('POST', '/ventes/comptoir', o({ body: { client: S.cli2._id, lignes: [{ stock: art, quantite: 1 }], paiements: [{ mode: 'ESPECES', montant: 25 }] } }));
+    const tkA = r.body.data?.ticket;
+    r = await api('POST', '/reglements', o({ body: { client: S.cli2._id, mode: 'ESPECES', montant: 5, date: auj, affectations: [{ document: tkA?._id, montant: 5 }] } }));
+    const rgA = r.body.data;
+    check('Règlement daté du jour : heure réelle, après le ticket (ordre du relevé)', !!rgA && new Date(rgA.date) >= new Date(tkA.date), { ticket: tkA?.date, reglement: rgA?.date, status: r.status, body: r.body });
   } finally {
     server.kill();
     await mongoose.disconnect();

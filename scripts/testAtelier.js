@@ -558,6 +558,21 @@ async function main() {
       r = await api('GET', '/remuneration/commissions?' + new URLSearchParams(range), o());
       const comMO = r.body.data.find((c) => String(c.reparation?._id) === String(repMoDoc._id));
       check('Réparation 150 sans pièce, 20 % main-d\'œuvre → 30 (avant : 0 / « aucune règle »)', comMO?.montant === 30 && comMO.sourceType === 'INTERVENTION', comMO);
+
+      // Réparation CRÉÉE directement « SORTIE REPARE » (sans recalcul manuel) → commission créée tout de suite
+      const stSortie = (await api('POST', '/statuses', o({ body: { label: 'SORTIE REPARE', color: '#059669', order: 9 } }))).body.data;
+      r = await api('POST', '/reparations', o({ body: {
+        client: S.r1.client, categorie: S.cat._id, objet: S.obj._id, marque: S.mar._id,
+        panneType: ['Ecran'], status: stSortie?._id, reparateur: repMO, prix: 200, acompte: 200,
+      } }));
+      check('Création directe en « SORTIE REPARE » (201)', r.status === 201 && !!r.body.data?.dateCloture, r.body);
+      const repDirecte = r.body.data?._id;
+      let comDirecte = null;
+      for (let i = 0; i < 20 && !comDirecte; i++) {
+        await new Promise((ok) => setTimeout(ok, 150));
+        comDirecte = await runAsSystem(async () => req('src/models/Commission').findOne({ reparation: repDirecte, sourceType: 'INTERVENTION' }).lean().exec());
+      }
+      check('Créée clôturée : 20 % × 200 sans pièce = 40, sans « Calculer » (avant : aucune ligne)', comDirecte?.montant === 40, comDirecte);
     }
 
     // ---------- Rapports ----------

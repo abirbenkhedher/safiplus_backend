@@ -18,7 +18,7 @@ const DEFAULTS = {
   commerce: {
     raisonSociale: '', matriculeFiscal: '', registreCommerce: '', adresse: '', telephone: '',
     email: '', rib: '', piedPage: '', timbreFiscal: 1, validiteDevisJours: 15, delaiPaiementJours: 0,
-    caisseObligatoire: false,
+    caisseObligatoire: false, prixTTC: true,
   },
 };
 

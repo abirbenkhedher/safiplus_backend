@@ -771,6 +771,8 @@ exports.create = async (req, res) => {
     const populated = await getFullPopulate(Reparation.findById(reparation._id));
 
     logger.info(`Réparation créée: ${reparation.numero} par ${req.user.username}`);
+    // ✅ Créée directement clôturée → commissions comme pour un changement de statut
+    if (reparation.dateCloture) commissionService.syncReparationSafe(reparation._id, req.user._id);
 
     let smsInfo = null;
     if (req.body.envoyerSMS) {

@@ -40,6 +40,8 @@ const parametresSchema = new mongoose.Schema({
     delaiPaiementJours: { type: Number, default: 0, min: 0 },
     // Espèces refusées tant qu'aucune caisse n'est ouverte
     caisseObligatoire: { type: Boolean, default: false },
+    // ✅ Prix saisis TTC en caisse, devis et factures (indépendant de prixTTC = réparations)
+    prixTTC: { type: Boolean, default: true },
   },
 
   // Historique des changements de mode de stock (§5 : validation explicite)

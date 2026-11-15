@@ -64,12 +64,26 @@ const designationStock = (st) =>
 
 const num = (v, def = 0) => (v === undefined || v === null || v === '' ? def : Number(v));
 
+// ✅ Commerce : prix saisis TTC par défaut (réglage commerce.prixTTC), indépendant du
+//    réglage atelier prixTTC (réparations, commissions). Prix des articles : stockés
+//    dans la base atelier → convertis vers la base du document.
+const prixCommerceTTC = (params) => params.commerce?.prixTTC !== false;
+const baseCommerce = (params) => (prixCommerceTTC(params) ? 'TTC' : 'HT');
+const versBaseDocument = (prix, params, prixSaisis, tva) => {
+  const p = Number(prix) || 0;
+  const sourceTTC = params.prixTTC !== false; // base atelier (articles, réparations)
+  const cibleTTC = prixSaisis !== 'HT';
+  if (sourceTTC === cibleTTC || !tva) return p;
+  return round3(cibleTTC ? p * (1 + tva / 100) : p / (1 + tva / 100));
+};
+const prixArticle = (st, params, prixSaisis, tva) => versBaseDocument(st.prixIndicatif, params, prixSaisis, tva);
+
 /**
  * Normalise les lignes reçues du client.
  * Les lignes « article » doivent appartenir à la boutique ; les lignes
  * « réparation » au même client et à la même boutique.
  */
-const buildLignes = async (raw, { boutique, client, params, type, origines = {} }) => {
+const buildLignes = async (raw, { boutique, client, params, type, origines = {}, prixSaisis = baseCommerce(params) }) => {
   if (!Array.isArray(raw)) throw new AppError('Lignes invalides');
   const tvaDefaut = Number(params.tauxTVA) || 0;
   const coutsBL = origines.coutsBL || new Map();         // `${blId}:${stockId}` → coût (stock déjà sorti)
@@ -105,7 +119,7 @@ const buildLignes = async (raw, { boutique, client, params, type, origines = {} 
         ...base, type: 'reparation', reparation: r._id, stock: null, code: r.numero || '',
         designation: String(l.designation || '').trim() || designationReparation(r),
         quantite: 1, unite: '',
-        prixUnitaire: num(l.prixUnitaire, prixTotalReparation(r)),
+        prixUnitaire: num(l.prixUnitaire, versBaseDocument(prixTotalReparation(r), params, prixSaisis, base.tauxTVA)),
       });
       continue;
     }
@@ -120,13 +134,14 @@ const buildLignes = async (raw, { boutique, client, params, type, origines = {} 
         throw new AppError(`« ${designationStock(st)} » est une pièce de réparation : changez son usage en « Produit de vente » ou « Les deux » pour la vendre`, 400, 'USAGE_ARTICLE');
       }
       if (!Number.isInteger(quantite)) throw new AppError('La quantité d\'un article doit être un nombre entier');
-      const prixUnitaire = num(l.prixUnitaire, st.prixIndicatif || 0);
-      if (!(prixUnitaire >= 0)) throw new AppError('Prix unitaire invalide');
       const sansTVA = l.tauxTVA === undefined || l.tauxTVA === null || l.tauxTVA === '';
+      const tvaLigne = sansTVA && st.tauxTVA !== null && st.tauxTVA !== undefined ? st.tauxTVA : base.tauxTVA;
+      const prixUnitaire = num(l.prixUnitaire, prixArticle(st, params, prixSaisis, tvaLigne));
+      if (!(prixUnitaire >= 0)) throw new AppError('Prix unitaire invalide');
       out.push({
         ...base,
         // TVA propre à l'article si la ligne n'en précise pas
-        tauxTVA: sansTVA && st.tauxTVA !== null && st.tauxTVA !== undefined ? st.tauxTVA : base.tauxTVA,
+        tauxTVA: tvaLigne,
         type: 'article', stock: st._id, reparation: null, code: st.code || '',
         designation: String(l.designation || '').trim() || designationStock(st),
         unite: st.unite || '', prixUnitaire,
@@ -262,7 +277,7 @@ const appliquerChamps = async (doc, body, params, { creation }) => {
     if (!['HT', 'TTC'].includes(body.prixSaisis)) throw new AppError('Prix saisis : HT ou TTC');
     doc.prixSaisis = body.prixSaisis;
   } else if (creation) {
-    doc.prixSaisis = params.prixTTC === false ? 'HT' : 'TTC';
+    doc.prixSaisis = baseCommerce(params);
   }
   if (body.date !== undefined) doc.date = body.date ? new Date(body.date) : new Date();
   if (body.dateEcheance !== undefined) doc.dateEcheance = body.dateEcheance ? new Date(body.dateEcheance) : null;
@@ -271,7 +286,7 @@ const appliquerChamps = async (doc, body, params, { creation }) => {
   ['conditionsPaiement', 'observation'].forEach((k) => { if (body[k] !== undefined) doc[k] = String(body[k] || ''); });
   if (body.lignes !== undefined) {
     doc.lignes = await buildLignes(body.lignes, {
-      boutique: doc.boutique, client: doc.client, params, type: doc.type, origines: await contexteOrigines(doc),
+      boutique: doc.boutique, client: doc.client, params, type: doc.type, origines: await contexteOrigines(doc), prixSaisis: doc.prixSaisis,
     });
   }
   const c = params.commerce || {};
@@ -400,7 +415,7 @@ const depuis = async ({ type = 'FACTURE', client, reparations = [], bls = [] }, 
   const doc = new DocumentVente({ type, boutique, client: clientId, createdBy: userId, origines });
   await appliquerChamps(doc, { lignes: [] }, params, { creation: true });
   // buildLignes : réparations normalisées, lignes de BL conservées (stock déjà sorti)
-  doc.lignes = await buildLignes(lignes, { boutique, client: clientId, params, type, origines: await contexteOrigines(doc) });
+  doc.lignes = await buildLignes(lignes, { boutique, client: clientId, params, type, origines: await contexteOrigines(doc), prixSaisis: doc.prixSaisis });
   doc.reparations = [...new Set(doc.lignes.filter((l) => l.reparation).map((l) => String(l.reparation)))];
   await doc.save();
   return doc;
@@ -689,9 +704,23 @@ const creerReglement = async (body, userId) => {
   return reg;
 };
 
+/**
+ * ✅ Date d'un règlement : une date seule (« 2026-11-14 », formulaire) reçoit l'heure actuelle,
+ *    pour rester dans l'ordre réel des opérations (relevé, caisse). Jamais dans le futur.
+ */
+const dateOperation = (v) => {
+  const now = new Date();
+  if (!v) return now;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v));
+  if (!m) return new Date(v);
+  const d = new Date(now);
+  d.setFullYear(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d > now ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : d;
+};
+
 /** Création d'un règlement dans une transaction existante. */
 const enregistrerReglement = async (session, { boutique, clientId, sens, montantM, body, userId, cloturees }) => {
-  const date = body.date ? new Date(body.date) : new Date();
+  const date = dateOperation(body.date);
   // Espèces : rattachées à la caisse ouverte (obligatoire si paramétré)
   let sessionCaisse = null;
   if (body.mode === 'ESPECES') {
@@ -754,9 +783,9 @@ const venteComptoir = async (body, userId) => {
   for (const p of paiements) if (!Reglement.MODES.includes(p.mode)) throw new AppError('Mode de paiement invalide');
 
   const doc = new DocumentVente({ type: 'TICKET', boutique, client: client._id, createdBy: userId });
-  doc.prixSaisis = body.prixSaisis === 'HT' ? 'HT' : (body.prixSaisis === 'TTC' ? 'TTC' : (params.prixTTC === false ? 'HT' : 'TTC'));
+  doc.prixSaisis = body.prixSaisis === 'HT' ? 'HT' : (body.prixSaisis === 'TTC' ? 'TTC' : baseCommerce(params));
   doc.observation = String(body.observation || '').trim();
-  doc.lignes = await buildLignes(lignesBrutes, { boutique, client: client._id, params, type: 'TICKET' });
+  doc.lignes = await buildLignes(lignesBrutes, { boutique, client: client._id, params, type: 'TICKET', prixSaisis: doc.prixSaisis });
   doc.calculer();
   const netM = toM(doc.netAPayer);
   const recuM = paiements.reduce((s, p) => s + p.montantM, 0);
@@ -1058,7 +1087,7 @@ const synthese = async ({ from, to }) => {
 };
 
 module.exports = {
-  buildLignes, infosPaiement, infosPaiementMany, factureActiveDeReparation,
+  buildLignes, baseCommerce, prixArticle, dateOperation, infosPaiement, infosPaiementMany, factureActiveDeReparation,
   creerBrouillon, modifierBrouillon, supprimerBrouillon, transformer, depuis, creerAvoir,
   valider, changerStatutDevis, annuler,
   creerReglement, affecterReste, annulerReglement, changerEtatCheque, facturesImpayees,
