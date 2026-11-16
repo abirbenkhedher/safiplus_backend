@@ -2,6 +2,8 @@ const XLSX = require('xlsx');
 const Client = require('../models/Client');
 const { avecStats } = require('../services/clientStatsService');
 const Reparation = require('../models/Reparation');
+const DocumentVente = require('../models/DocumentVente');
+const { infosPaiementMany } = require('../services/venteService');
 const logger = require('../config/logger');
 
 // ============================================================
@@ -503,6 +505,36 @@ exports.getOne = async (req, res) => {
       .populate('modele', 'nom')
       .sort({ createdAt: -1 });
 
+    // Ventes du client (gestion commerciale) : factures, tickets comptoir, BL, avoirs
+    // — hors devis, brouillons et documents annulés.
+    let ventes = [];
+    try {
+      const docs = await DocumentVente.find({
+        client: client._id,
+        isDeleted: false,
+        type: { $in: ['FACTURE', 'TICKET', 'BL', 'AVOIR'] },
+        statut: { $nin: ['brouillon', 'annule'] },
+      })
+        .select('type numero statut date netAPayer totalTTC montantRegleDirect montantAvoirs reparations lignes.designation lignes.quantite createdAt')
+        .sort({ date: -1, createdAt: -1 })
+        .limit(500)
+        .lean();
+      const infos = await infosPaiementMany(docs);
+      ventes = docs.map((d) => ({
+        _id: d._id,
+        type: d.type,
+        numero: d.numero,
+        statut: d.statut,
+        date: d.date || d.createdAt,
+        montant: d.netAPayer || d.totalTTC || 0,
+        articles: (d.lignes || []).map((l) => `${l.quantite > 1 ? `${l.quantite} × ` : ''}${l.designation}`),
+        paiement: infos.get(String(d._id)) || null,
+      }));
+    } catch (e) {
+      // Module commercial indisponible (ex. sans boutique) : ne bloque pas la fiche client
+      logger.warn(`Ventes client indisponibles: ${e.message}`);
+    }
+
     const totalPaye = reparations.reduce((sum, r) => sum + r.acompte, 0);
     const totalRestant = reparations.reduce(
       (sum, r) => sum + (r.prix - r.acompte),
@@ -514,6 +546,7 @@ exports.getOne = async (req, res) => {
       data: {
         client,
         reparations,
+        ventes,
         stats: {
           totalReparations: reparations.length,
           totalPaye,
