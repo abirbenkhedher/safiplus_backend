@@ -2,8 +2,10 @@
 // ============================================================
 // ✅ RATTRAPAGE DES CLÔTURES DE RÉPARATIONS
 // ------------------------------------------------------------
-// Règle : statut « réparé / sortie réparé(e) » ET reste à payer = 0
+// Règle : statut « sortie réparé(e) » (PAS « réparé » seul) ET reste à payer = 0
 //         → la réparation est clôturée (dateCloture).
+// Les réparations clôturées qui ne respectent plus la règle (statut
+// « Réparé » seul, autre statut, reste > 0) sont DÉCLÔTURÉES.
 // Les réparations déjà dans ce cas mais sans date de clôture (libellé de
 // statut non reconnu auparavant, prix 0...) sont clôturées :
 //   dateCloture = date du passage à ce statut (historique), sinon updatedAt.
@@ -62,7 +64,7 @@ const run = async () => {
         $push: {
           modifications: {
             field: 'dateCloture', oldValue: null, newValue: new Date(date),
-            modifiedBy: null, modifiedAt: new Date(), comment: 'Rattrapage clôture (réparé + reste 0)',
+            modifiedBy: null, modifiedAt: new Date(), comment: 'Rattrapage clôture (sortie réparé + reste 0)',
           },
         },
       }
@@ -78,7 +80,43 @@ const run = async () => {
     faites += 1;
   }
 
-  console.log(`\n🎉 Terminé${APPLY ? ` : ${faites} réparation(s) clôturée(s).` : ' (simulation).'}`);
+  // ---- Déclôture : réparations clôturées à tort ----
+  const cloturees = await runAsSystem(async () =>
+    Reparation.find({ isDeleted: { $ne: true }, dateCloture: { $ne: null } })
+      .select('numero status prix acompte diagnosticImprevus dateCloture organisation boutique')
+      .lean()
+  );
+  const aDeclore = cloturees.filter((r) => !doitEtreCloturee(r, labelOf.get(String(r.status))));
+  console.log(`\n🔎 ${cloturees.length} réparation(s) clôturée(s), ${aDeclore.length} à DÉCLÔTURER :`);
+
+  let declos = 0;
+  for (const r of aDeclore) {
+    console.log(`   ${r.numero || r._id} · « ${labelOf.get(String(r.status)) || '-'} » · reste ${resteAPayer(r)} · clôturée le ${new Date(r.dateCloture).toISOString().slice(0, 10)} → déclôture`);
+    if (!APPLY) continue;
+
+    await runAsSystem(async () => Reparation.collection.updateOne(
+      { _id: r._id, dateCloture: r.dateCloture },
+      {
+        $set: { dateCloture: null },
+        $push: {
+          modifications: {
+            field: 'dateCloture', oldValue: r.dateCloture, newValue: null,
+            modifiedBy: null, modifiedAt: new Date(), comment: 'Rattrapage : déclôture (pas « sortie réparé » ou reste > 0)',
+          },
+        },
+      }
+    ));
+
+    const ctx = { organisation: r.organisation, boutiques: [r.boutique], boutique: r.boutique, allowed: [r.boutique] };
+    try {
+      await runWithTenant(ctx, async () => commissionService.syncReparation(r._id, null));
+    } catch (err) {
+      console.log(`      ⚠️ commissions non recalculées : ${err.message}`);
+    }
+    declos += 1;
+  }
+
+  console.log(`\n🎉 Terminé${APPLY ? ` : ${faites} clôturée(s), ${declos} déclôturée(s).` : ' (simulation).'}`);
 };
 
 run()

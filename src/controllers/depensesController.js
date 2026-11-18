@@ -48,6 +48,19 @@ const prixSaisis = (v) => {
   return v;
 };
 
+/** Remise globale d'une facture d'achat : { remiseGlobaleType, remiseGlobaleValeur } reçus. */
+const remiseGlobale = (body) => {
+  const out = {};
+  if (body.remiseGlobaleType !== undefined) out.remiseGlobaleType = body.remiseGlobaleType === 'montant' ? 'montant' : 'pct';
+  if (body.remiseGlobaleValeur !== undefined) {
+    const v = Number(body.remiseGlobaleValeur) || 0;
+    const t = out.remiseGlobaleType || body.remiseGlobaleType;
+    if (!(v >= 0) || (t !== 'montant' && v > 100)) throw new AppError('Remise globale invalide');
+    out.remiseGlobaleValeur = v;
+  }
+  return out;
+};
+
 /** Normalise les lignes d'une facture d'achat (montants recalculés par le modèle). */
 const parseLignes = async (lignes) => {
   if (!Array.isArray(lignes) || lignes.length === 0) {
@@ -69,7 +82,9 @@ const parseLignes = async (lignes) => {
     }
     out.push({
       stock: l.stock || null, designation, quantite, prixUnitaire,
-      remise: Number(l.remise) || 0, fraisImputables: Number(l.fraisImputables) || 0,
+      remise: l.remiseType === 'pct' ? 0 : Number(l.remise) || 0, fraisImputables: Number(l.fraisImputables) || 0,
+      remiseType: l.remiseType === 'pct' ? 'pct' : 'montant',
+      remisePct: l.remiseType === 'pct' ? Math.min(100, Math.max(0, Number(l.remisePct) || 0)) : 0,
       tauxTVA: tauxTVA(l.tauxTVA),
       prixSaisis: l.prixSaisis ? prixSaisis(l.prixSaisis) : null,
     });
@@ -237,6 +252,7 @@ exports.create = async (req, res) => {
   if (type === 'ACHAT') {
     doc.lignes = await parseLignes(lignes);
     doc.prixSaisis = prixSaisis(req.body.prixSaisis);
+    Object.assign(doc, remiseGlobale(req.body));
   }
   // Boutique choisie dans le formulaire (vue globale) — contrôlée par le plugin tenant
   if (!administrative && req.body.boutique) doc.boutique = req.body.boutique;
@@ -272,6 +288,7 @@ exports.update = async (req, res) => {
   allowed.forEach((k) => { if (req.body[k] !== undefined) depense[k] = req.body[k]; });
   if (depense.type === 'ACHAT' && req.body.lignes !== undefined) depense.lignes = await parseLignes(req.body.lignes);
   if (depense.type === 'ACHAT' && req.body.prixSaisis !== undefined) depense.prixSaisis = prixSaisis(req.body.prixSaisis);
+  if (depense.type === 'ACHAT') depense.set(remiseGlobale(req.body));
 
   await depense.save();
   await logAction({

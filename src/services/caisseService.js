@@ -53,7 +53,7 @@ const acomptesReparations = async (boutique, from, to) => {
 const calculer = async (s) => {
   const fin = s.fermeLe || new Date();
   const [regs, mvts, acomptes, autres] = await Promise.all([
-    Reglement.find({ sessionCaisse: s._id, statut: 'valide' }).select('sens montant').lean(),
+    Reglement.find({ sessionCaisse: s._id, statut: 'valide' }).select('sens montant affectations.document affectations.direct affectations.reparations.montant').lean(),
     MouvementCaisse.find({ session: s._id, statut: 'valide' }).select('type montant').lean(),
     acomptesReparations(s.boutique, s.ouvertureLe, fin),
     Reglement.aggregate([
@@ -67,6 +67,17 @@ const calculer = async (s) => {
   const entM = sumM(mvts.filter((m) => m.type === 'ENTREE'));
   const sorM = sumM(mvts.filter((m) => m.type === 'SORTIE'));
   const acM = toM(acomptes.total);
+  // ✅ Origine : part des règlements reportée sur des réparations + acomptes de dossier = réparations ;
+  //    le reste (ventes comptoir, factures d'articles, avances) − remboursements = ventes
+  //    (facture uniquement de réparations : sa part « directe », ex. timbre, compte aussi en réparations)
+  const encs = regs.filter((r) => r.sens === 'ENCAISSEMENT');
+  const docIds = [...new Set(encs.flatMap((r) => (r.affectations || []).map((a) => String(a.document))))];
+  const DocumentVente = require('../models/DocumentVente');
+  const docs = docIds.length ? await DocumentVente.find({ _id: { $in: docIds } }).select('lignes.type').lean() : [];
+  const repSeule = new Set(docs.filter((d) => d.lignes?.length && d.lignes.every((l) => l.type === 'reparation')).map((d) => String(d._id)));
+  const repRegM = encs.reduce((t, r) => t + (r.affectations || []).reduce((u, a) => u
+    + (a.reparations || []).reduce((v, x) => v + toM(x.montant), 0)
+    + (repSeule.has(String(a.document)) ? toM(a.direct) : 0), 0), 0);
   const autresModes = {};
   autres.forEach((a) => {
     const k = a._id.mode;
@@ -79,6 +90,8 @@ const calculer = async (s) => {
     sorties: fromM(sorM),
     acomptesReparations: acomptes.total,
     acomptesDetails: acomptes.details,
+    dontReparations: fromM(repRegM + acM),
+    dontVentes: fromM(encM - repRegM - rembM),
     theorique: fromM(toM(s.fondInitial) + encM - rembM + entM - sorM + acM),
     autresModes,
   };

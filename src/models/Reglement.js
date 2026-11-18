@@ -11,7 +11,9 @@ const tenantPlugin = require('./plugins/tenantPlugin');
 // La partie non affectée = avance / crédit du client.
 // Jamais supprimé : annulation (contre-écriture) avec motif.
 // ============================================================
-const MODES = ['ESPECES', 'CHEQUE', 'VIREMENT', 'CARTE', 'AUTRE'];
+// ✅ TRAITE (lettre de change) : comme un chèque — n°, banque, échéance, en portefeuille / encaissée / impayée
+const MODES = ['ESPECES', 'CHEQUE', 'TRAITE', 'VIREMENT', 'CARTE', 'AUTRE'];
+const MODES_ECHEANCE = ['CHEQUE', 'TRAITE'];
 
 const reglementSchema = new mongoose.Schema({
   numero: { type: String, trim: true, default: null },
@@ -56,4 +58,5 @@ reglementSchema.index({ 'affectations.document': 1 });
 
 const Reglement = mongoose.model('Reglement', reglementSchema);
 Reglement.MODES = MODES;
+Reglement.MODES_ECHEANCE = MODES_ECHEANCE;
 module.exports = Reglement;

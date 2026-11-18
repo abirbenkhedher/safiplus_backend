@@ -8,7 +8,9 @@ const tenantPlugin = require('./plugins/tenantPlugin');
 // Une règle déjà utilisée n'est jamais modifiée : nouvelle version.
 // ============================================================
 const CALC_TYPES = ['pourcentage', 'fixe_unite', 'forfait_intervention', 'palier'];
-const BASES = ['prix_vente', 'main_oeuvre', 'marge', 'cout_achat'];
+// benefice_net : % du bénéfice net MENSUEL (TTC) = prix des dossiers − coût des pièces
+//                − part des dépenses imputées à la famille (calcul par période)
+const BASES = ['prix_vente', 'main_oeuvre', 'marge', 'cout_achat', 'benefice_net'];
 
 const palierSchema = new mongoose.Schema({
   de: { type: Number, required: true, min: 0 },      // quantité / nb interventions (inclus)
@@ -22,6 +24,8 @@ const regleSchema = new mongoose.Schema({
   reparateur: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   article: { type: mongoose.Schema.Types.ObjectId, ref: 'Stock', default: null },
   categorie: { type: mongoose.Schema.Types.ObjectId, ref: 'Categorie', default: null },
+  // ✅ Famille (Informatique, GSM…) : uniquement pour la base « bénéfice net »
+  famille: { type: mongoose.Schema.Types.ObjectId, ref: 'Famille', default: null },
   typeArticle: { type: mongoose.Schema.Types.ObjectId, ref: 'TypeArticle', default: null },
   panne: { type: String, trim: true, default: null }, // type d'intervention (nom de panne)
 
@@ -47,9 +51,17 @@ regleSchema.add({ boutiqueCible: { type: mongoose.Schema.Types.ObjectId, ref: 'B
 regleSchema.index({ organisation: 1, actif: 1, validFrom: 1 });
 
 regleSchema.pre('validate', function () {
-  const targets = [this.article, this.categorie, this.typeArticle, this.panne].filter(Boolean);
+  const targets = [this.article, this.categorie, this.typeArticle, this.panne, this.famille].filter(Boolean);
   if (targets.length > 1) {
-    this.invalidate('article', 'Une règle cible un seul élément : article, catégorie, type ou intervention');
+    this.invalidate('article', 'Une règle cible un seul élément : article, catégorie, famille, type ou intervention');
+  }
+  if (this.base === 'benefice_net') {
+    if (this.typeCalcul !== 'pourcentage') this.invalidate('typeCalcul', 'Le bénéfice net se calcule en pourcentage');
+    if (this.article || this.typeArticle || this.panne) {
+      this.invalidate('base', 'Bénéfice net : choisissez une famille, une catégorie ou une règle générale');
+    }
+  } else if (this.famille) {
+    this.invalidate('famille', 'La cible « famille » est réservée à la base « bénéfice net »');
   }
   if (this.typeCalcul === 'forfait_intervention' && (this.article || this.categorie || this.typeArticle)) {
     this.invalidate('typeCalcul', 'Un forfait par intervention cible une panne/intervention ou est général');

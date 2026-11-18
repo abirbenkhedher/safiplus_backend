@@ -16,6 +16,7 @@ router.post('/', requireAuth, canWrite, stockController.create);
 router.put('/:id', requireAuth, canWrite, stockController.update);
 router.patch('/:id/quantite', requireAuth, canWrite, stockController.setQuantite); // ✅ NOUVEAU
 router.post('/:id/increment', requireAuth, canWrite, stockController.increment);
+router.post('/:id/entree', requireAuth, canWrite, stockController.entreeStock); // ✅ bouton « + » = entrée en stock
 router.post('/consommer', requireAuth, requireAnyPermission(['stock', 'reparations']), stockController.consommerPourReparation);
 router.get('/:id/mouvements', requireAuth, canRead, stockController.getMouvements);
 // ✅ Module atelier : coût, transferts, inventaire

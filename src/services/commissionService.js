@@ -4,6 +4,8 @@ const RegleCommission = require('../models/RegleCommission');
 const ContratReparateur = require('../models/ContratReparateur');
 const Boutique = require('../models/Boutique');
 const Stock = require('../models/Stock');
+const Categorie = require('../models/Categorie');
+const Depense = require('../models/Depense');
 const money = require('../utils/money');
 const logger = require('../config/logger');
 const { getParametres, isPeriodeCloturee } = require('./atelierService');
@@ -36,6 +38,7 @@ const NIVEAUX = {
 //    sans panne choisie : appliquée aux pièces, sa base vaudrait toujours 0.
 //    (une ancienne règle main-d'œuvre ciblant un article reste au niveau article)
 const niveauRegle = (r) => {
+  if (r.base === 'benefice_net') return 'benefice'; // calcul mensuel, hors réparation
   if (r.typeCalcul === 'forfait_intervention' || r.panne) return 'intervention';
   if (r.base === 'main_oeuvre' && ['pourcentage', 'palier'].includes(r.typeCalcul)
     && !r.article && !r.categorie && !r.typeArticle) return 'intervention';
@@ -46,6 +49,7 @@ const specificite = (r) => {
   let t = 0;
   if (r.article) t = 4;
   else if (r.categorie || r.typeArticle || r.panne) t = 2;
+  else if (r.famille) t = 1.5; // famille : plus large qu'une catégorie
   return t + (r.reparateur ? 1 : 0) + (r.boutiqueCible ? 0.5 : 0); // ✅ exception boutique prioritaire
 };
 
@@ -172,8 +176,9 @@ const souhaitLigne = async (f, ctx, { cleBase, sourceType, reparation, ligne, re
     return null;
   }
   const q = Number(ligne.quantite) || 0;
-  const pv = ligne.prixVenteUnitaire ?? stock.prixIndicatif ?? 0;
-  const pvHT = toHT(ctx.params, money.mul(pv, q));
+  // ✅ Le prix de réparation de l'article est INDICATIF : la valeur de vente d'une pièce
+  //    est sa part du PRIX DU DOSSIER (au prorata du coût des pièces), calculée par l'appelant.
+  const pvHT = ligne.valeurDossierHT ?? 0;
   const cout = ligne.coutTotal ?? money.mul(coutReference(stock).cout, q);
   return {
     cleBase, sourceType, reparation, sourceLigneId: ligne._id,
@@ -192,21 +197,29 @@ const souhaitsReparation = async (f, rep) => {
     f.alertes.push({ type: 'SANS_REPARATEUR', reparation: sid(rep._id), message: `Réparation ${rep.numero} sans réparateur` });
     return [];
   }
-  const pieces = (rep.piecesStock || []).filter((p) => p.statut === 'consomme');
+  const piecesBrutes = (rep.piecesStock || []).filter((p) => p.statut === 'consomme');
   const prixHT = toHT(ctx.params, prixTotalReparation(rep));
-  let coutPiecesM = 0; let pvPiecesM = 0;
-  for (const p of pieces) {
+  // ✅ Seul le PRIX DU DOSSIER compte (le prix de réparation des articles est indicatif) :
+  //    chaque pièce reçoit une part du prix du dossier au prorata de son coût (à défaut : quantité).
+  const couts = [];
+  for (const p of piecesBrutes) {
     const st = await f.getStock(p.stock);
-    coutPiecesM += money.toM(p.coutTotal ?? money.mul(st ? coutReference(st).cout : 0, p.quantite));
-    pvPiecesM += money.toM(money.mul(p.prixVenteUnitaire ?? st?.prixIndicatif ?? 0, p.quantite));
+    couts.push(money.toM(p.coutTotal ?? money.mul(st ? coutReference(st).cout : 0, p.quantite)));
   }
+  const coutPiecesM = couts.reduce((s, c) => s + c, 0);
+  const qteTotale = piecesBrutes.reduce((s, p) => s + (Number(p.quantite) || 0), 0);
+  const prixHTM = money.toM(prixHT);
+  const pieces = piecesBrutes.map((p, i) => {
+    const poids = coutPiecesM > 0 ? couts[i] / coutPiecesM : (qteTotale > 0 ? (Number(p.quantite) || 0) / qteTotale : 0);
+    return { ...p, valeurDossierHT: money.fromM(Math.round(prixHTM * poids)) };
+  });
   const coutPieces = money.fromM(coutPiecesM);
-  const pvPiecesHT = toHT(ctx.params, money.fromM(pvPiecesM));
   const basesInterv = {
     prix_vente: prixHT,
     cout_achat: coutPieces,
     marge: money.sub(prixHT, coutPieces),
-    main_oeuvre: Math.max(0, money.sub(prixHT, pvPiecesHT)),
+    // Main-d'œuvre = prix du dossier HT − coût d'achat HT des pièces
+    main_oeuvre: Math.max(0, money.sub(prixHT, coutPieces)),
   };
 
   const out = [];
@@ -310,15 +323,16 @@ const reconcilier = async (f, souhaits, scopeFilter, userId) => {
             article: s.article, panne: s.panne, cleBase, cleSource: `${cleBase}#${n}`,
             dateSource, periode: periodeKey(dateSource), quantite: s.quantite, partPourcentage: s.part,
             regle: s.rule._id, regleSnapshot: snapshotRegle(s.rule), baseMontant, montant,
-            statut: 'calculee', createdBy: userId || null,
+            details: s.details || null, statut: 'calculee', createdBy: userId || null,
           });
           stats.crees++;
         } else if (active.statut === 'calculee') {
           const { montant, baseMontant } = await montantSouhait({ ...s, dateSource: active.dateSource }, active.createdAt);
-          if (montant !== active.montant || sid(active.regle) !== sid(s.rule._id) || active.quantite !== s.quantite) {
+          const detailsChanges = s.details && JSON.stringify(s.details) !== JSON.stringify(active.details || null);
+          if (montant !== active.montant || sid(active.regle) !== sid(s.rule._id) || active.quantite !== s.quantite || detailsChanges) {
             active.set({
               montant, baseMontant, regle: s.rule._id, regleSnapshot: snapshotRegle(s.rule),
-              quantite: s.quantite, partPourcentage: s.part,
+              quantite: s.quantite, partPourcentage: s.part, ...(s.details ? { details: s.details } : {}),
             });
             await active.save();
             stats.recalculees++;
@@ -380,6 +394,125 @@ const syncReparationSafe = (reparationId, userId) =>
   syncReparation(reparationId, userId).catch((err) =>
     logger.error(`Commission sync réparation ${reparationId}:`, err));
 
+// ------------------------------------------------------------
+// ✅ BÉNÉFICE NET MENSUEL (base « benefice_net »), en TTC
+//   Pour chaque mois, boutique et réparateur :
+//   marge = Σ (prix du dossier TTC − coût TTC des pièces) × part du réparateur
+//           sur ses réparations clôturées du mois (famille / catégorie de la règle)
+//   dépenses = dépenses du mois imputées à la famille (hors factures d'achat de stock,
+//              déjà comptées via le coût des pièces) × (marge du réparateur / marge de
+//              toute la famille ce mois)
+//   commission = taux × max(0, marge − dépenses)
+// ------------------------------------------------------------
+const ttcDe = (params, montant, taux) => (params.prixTTC !== false ? money.round3(montant)
+  : money.round3(Number(montant) * (1 + (Number(taux ?? params.tauxTVA) || 0) / 100)));
+const debutMois = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+const finMois = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+
+const beneficeMois = async (f, boutique, mois, userId) => {
+  const from = debutMois(mois); const to = finMois(mois);
+  const periode = periodeKey(from);
+  const ctx = await f.getCtx(boutique);
+  const regles = ctx.rules.filter((r) => niveauRegle(r) === 'benefice' && estValide(r, to));
+
+  const souhaits = [];
+  if (regles.length) {
+    const reps = await Reparation.find({ boutique, isDeleted: { $ne: true }, dateCloture: { $gte: from, $lte: to } })
+      .select('numero boutique categorie prix diagnosticImprevus piecesStock repartitionCommission reparateur reparateurSAV isSAV').lean();
+    const catIds = [...new Set(reps.map((r) => sid(r.categorie)).filter(Boolean))];
+    const cats = await Categorie.find({ _id: { $in: catIds } }).select('famille nom').lean();
+    const familleDe = new Map(cats.map((c) => [sid(c._id), sid(c.famille)]));
+
+    // Marge TTC de chaque réparation
+    const lignes = [];
+    for (const rep of reps) {
+      if (rep.isSAV && !ctx.params.commissionSurSAV) continue;
+      let coutTTCM = 0;
+      for (const p of (rep.piecesStock || []).filter((x) => x.statut === 'consomme')) {
+        const st = await f.getStock(p.stock);
+        const coutHT = p.coutTotal ?? money.mul(st ? coutReference(st).cout : 0, p.quantite);
+        const t = st?.tauxTVA ?? ctx.params.tauxTVA ?? 0;
+        coutTTCM += Math.round(money.toM(coutHT) * (1 + (Number(t) || 0) / 100));
+      }
+      const prixTTCM = money.toM(ttcDe(ctx.params, prixTotalReparation(rep)));
+      lignes.push({ rep, famille: familleDe.get(sid(rep.categorie)) || null, margeM: prixTTCM - coutTTCM, parts: repartition(rep) });
+    }
+
+    // Marge totale par famille (tous réparateurs) : clé de répartition des dépenses
+    const margeFamilleM = new Map();
+    for (const l of lignes) margeFamilleM.set(l.famille, (margeFamilleM.get(l.famille) || 0) + l.margeM);
+    const deps = await Depense.find({
+      boutique, type: { $ne: 'ACHAT' }, statut: { $ne: 'annulee' }, isDeleted: { $ne: true },
+      famille: { $ne: null }, dateDepense: { $gte: from, $lte: to },
+    }).select('famille montant').lean();
+    const depFamilleM = new Map();
+    for (const d of deps) depFamilleM.set(sid(d.famille), (depFamilleM.get(sid(d.famille)) || 0) + money.toM(d.montant));
+
+    // Regroupement : (réparateur, règle la plus précise) → marge par famille
+    const groupes = new Map();
+    for (const l of lignes) {
+      for (const { reparateur, part } of l.parts) {
+        if (modeContrat(ctx, reparateur, to) === 'salaire') continue;
+        const cands = regles.filter((r) => {
+          if (r.boutiqueCible && sid(r.boutiqueCible) !== sid(boutique)) return false;
+          if (r.reparateur && sid(r.reparateur) !== sid(reparateur)) return false;
+          if (r.categorie) return sid(r.categorie) === sid(l.rep.categorie);
+          if (r.famille) return sid(r.famille) === l.famille;
+          return true;
+        }).sort((a, b) => specificite(b) - specificite(a) || (b.priorite || 0) - (a.priorite || 0)
+          || new Date(b.validFrom) - new Date(a.validFrom));
+        const rule = cands[0];
+        if (!rule) continue;
+        const k = `${reparateur}|${sid(rule._id)}`;
+        if (!groupes.has(k)) groupes.set(k, { reparateur, rule, parFamille: new Map(), reparations: new Set() });
+        const g = groupes.get(k);
+        g.parFamille.set(l.famille, (g.parFamille.get(l.famille) || 0) + Math.round((l.margeM * part) / 100));
+        g.reparations.add(l.rep.numero || sid(l.rep._id));
+      }
+    }
+
+    for (const g of groupes.values()) {
+      let margeM = 0; let depM = 0;
+      for (const [fam, m] of g.parFamille) {
+        margeM += m;
+        const totalFam = margeFamilleM.get(fam) || 0;
+        const depFam = fam ? (depFamilleM.get(fam) || 0) : 0;
+        if (depFam && totalFam > 0) depM += Math.round((depFam * m) / totalFam);
+        else if (depFam && totalFam <= 0) depM += depFam; // marge nulle : toute la dépense pèse
+      }
+      const beneficeM = margeM - depM;
+      souhaits.push({
+        cleBase: `B:${sid(boutique)}:${periode}:${g.reparateur}:${sid(g.rule._id)}`, sourceType: 'BENEFICE_NET',
+        boutique, reparation: null, sourceLigneId: null, article: null, panne: null,
+        reparateur: g.reparateur, dateSource: to, quantite: 1, part: 100, rule: g.rule,
+        bases: { benefice_net: money.fromM(Math.max(0, beneficeM)) },
+        details: {
+          periode, marge: money.fromM(margeM), depenses: money.fromM(depM), benefice: money.fromM(beneficeM),
+          nbReparations: g.reparations.size, reparations: [...g.reparations].slice(0, 50),
+          famille: sid(g.rule.famille), categorie: sid(g.rule.categorie), ttc: true,
+        },
+      });
+    }
+  }
+  return reconcilier(f, souhaits, {
+    sourceType: 'BENEFICE_NET', boutique, cleBase: { $regex: `^B:${sid(boutique)}:${periode}:` },
+  }, userId);
+};
+
+/** Bénéfice net : recalcul de chaque mois couvert par [from, to], pour les boutiques concernées. */
+const calculerBeneficeNet = async ({ from, to, userId }) => {
+  const f = buildCtxFactory();
+  const total = { crees: 0, recalculees: 0, annulees: 0, contrePassations: 0 };
+  const boutiques = new Set([
+    ...(await Reparation.distinct('boutique', { dateCloture: { $gte: debutMois(new Date(from)), $lte: finMois(new Date(to)) } })).map(String),
+    ...(await Commission.distinct('boutique', { sourceType: 'BENEFICE_NET', dateSource: { $gte: debutMois(new Date(from)), $lte: finMois(new Date(to)) } })).map(String),
+  ]);
+  for (let m = debutMois(new Date(from)); m <= new Date(to); m = new Date(m.getFullYear(), m.getMonth() + 1, 1)) {
+    for (const b of boutiques) addStats(total, await beneficeMois(f, b, m, userId));
+  }
+  return { ...total, alertes: f.alertes };
+};
+
 /** Calcul (idempotent) de toutes les commissions d'une période. */
 const calculerPeriode = async ({ from, to, reparateur = null, userId }) => {
   const total = { crees: 0, recalculees: 0, annulees: 0, contrePassations: 0, alertes: [] };
@@ -395,6 +528,9 @@ const calculerPeriode = async ({ from, to, reparateur = null, userId }) => {
     addStats(total, { crees: r.crees || 0, recalculees: r.recalculees || 0, annulees: r.annulees || 0, contrePassations: r.contrePassations || 0 });
     total.alertes.push(...(r.alertes || []));
   }
+  // ✅ Commissions mensuelles « bénéfice net »
+  const bn = await calculerBeneficeNet({ from, to, userId });
+  addStats(total, { crees: bn.crees || 0, recalculees: bn.recalculees || 0, annulees: bn.annulees || 0, contrePassations: bn.contrePassations || 0 });
 
   if (reparateur) total.alertes = total.alertes.filter((a) => !a.reparateur || sid(a.reparateur) === sid(reparateur));
   return total;
@@ -412,5 +548,5 @@ const valider = async (filter, userId) => {
 module.exports = {
   resoudreRegle, calculerMontant, specificite, niveauRegle, NIVEAUX, repartition,
   prixTotalReparation, toHT,
-  syncReparation, syncReparationSafe, calculerPeriode, valider,
+  syncReparation, syncReparationSafe, calculerPeriode, calculerBeneficeNet, valider,
 };

@@ -31,6 +31,10 @@ const depenseSchema = new mongoose.Schema({
     prixUnitaire: { type: Number, required: true, min: 0 },
     prixSaisis: { type: String, enum: ['HT', 'TTC', null], default: null }, // null = celui de la facture
     remise: { type: Number, default: 0, min: 0 },           // montant HT de remise sur la ligne
+    // ✅ Remise de ligne en % (remiseType 'pct') ou en montant HT (remise, défaut)
+    remiseType: { type: String, enum: ['pct', 'montant'], default: 'montant' },
+    remisePct: { type: Number, default: 0, min: 0, max: 100 },
+    remiseGlobale: { type: Number, default: 0 },            // quote-part HT de la remise globale (calculée)
     fraisImputables: { type: Number, default: 0, min: 0 },  // transport, douane... (hors TVA)
     tauxTVA: { type: Number, default: 0, min: 0, max: 100 }, // % (0 = anciennes factures)
     montantHT: { type: Number, default: 0 },                // calculé : (PU×Q − remise) HT
@@ -39,6 +43,11 @@ const depenseSchema = new mongoose.Schema({
     coutHT: { type: Number, default: 0 },                   // calculé : HT + frais (coût réel)
     coutUnitaireRevient: { type: Number, default: 0 },      // coutHT / Q
   }],
+  // ✅ Remise sur toute la facture d'achat : % ou montant HT, répartie au prorata des lignes
+  //    (avant TVA) → coût de revient et CMP justes
+  remiseGlobaleType: { type: String, enum: ['pct', 'montant'], default: 'pct' },
+  remiseGlobaleValeur: { type: Number, default: 0, min: 0 },
+  remiseGlobaleMontant: { type: Number, default: 0 },
   // Statut : les dépenses simples sont validées à la saisie (comportement existant)
   statut: {
     type: String,
@@ -86,7 +95,7 @@ const depenseSchema = new mongoose.Schema({
 
   modePaiement: {
     type: String,
-    enum: ['ESPECES', 'CHEQUE', 'VIREMENT', 'CARTE'],
+    enum: ['ESPECES', 'CHEQUE', 'TRAITE', 'VIREMENT', 'CARTE'],
     default: 'ESPECES',
   },
 
@@ -123,12 +132,35 @@ depenseSchema.pre('validate', function () {
   if (this.type !== 'ACHAT') return;
   const { toM, fromM } = require('../utils/money');
   let tHT = 0; let tTVA = 0; let total = 0;
-  for (const l of this.lignes || []) {
+  const lignes = this.lignes || [];
+  // 1) HT brut − remise de ligne (% ou montant) ; 2) remise globale au prorata ; 3) TVA
+  const nets = lignes.map((l) => {
     const t = Number(l.tauxTVA) || 0;
     const ttc = (l.prixSaisis || this.prixSaisis) === 'TTC';
     const brut = Math.round(toM(l.prixUnitaire) * Number(l.quantite));
-    const ht = (ttc ? Math.round(brut / (1 + t / 100)) : brut) - toM(l.remise);
-    if (ht < 0) this.invalidate('lignes', 'La remise ne peut pas dépasser le montant de la ligne');
+    const brutHT = ttc ? Math.round(brut / (1 + t / 100)) : brut;
+    const rem = l.remiseType === 'pct' ? Math.round((brutHT * (Number(l.remisePct) || 0)) / 100) : toM(l.remise);
+    if (l.remiseType === 'pct') l.remise = fromM(rem);
+    const n = brutHT - rem;
+    if (n < 0) this.invalidate('lignes', 'La remise ne peut pas dépasser le montant de la ligne');
+    return Math.max(0, n);
+  });
+  const somme = nets.reduce((s, n) => s + n, 0);
+  const v = Number(this.remiseGlobaleValeur) || 0;
+  if (this.remiseGlobaleType === 'montant' && toM(v) > somme) this.invalidate('remiseGlobaleValeur', 'La remise globale dépasse le total HT');
+  const G = this.remiseGlobaleType === 'montant' ? Math.min(toM(v), somme) : Math.round((somme * Math.min(100, v)) / 100);
+  const parts = new Array(nets.length).fill(0);
+  if (G && somme > 0) {
+    nets.forEach((n, i) => { parts[i] = Math.floor((G * n) / somme); });
+    let reste = G - parts.reduce((s, p) => s + p, 0);
+    const ordre = nets.map((n, i) => i).sort((a, b) => nets[b] - nets[a]);
+    for (let k = 0; reste > 0; k = (k + 1) % ordre.length) { parts[ordre[k]] += 1; reste -= 1; }
+  }
+  this.remiseGlobaleMontant = fromM(G);
+  for (const [i, l] of lignes.entries()) {
+    const t = Number(l.tauxTVA) || 0;
+    const ht = nets[i] - parts[i];
+    l.remiseGlobale = fromM(parts[i]);
     const tva = Math.round((ht * t) / 100);
     const frais = toM(l.fraisImputables);
     l.montantHT = fromM(ht);

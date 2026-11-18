@@ -13,7 +13,10 @@ const LotStock = require('../models/LotStock');
 const valorisation = require('../services/valorisationService');
 const commissionService = require('../services/commissionService');
 const { withTransaction, so } = require('../services/transaction');
-const { getParametres, assertPeriodeOuverte } = require('../services/atelierService');
+const { getParametres, assertPeriodeOuverte, requireBoutiqueId } = require('../services/atelierService');
+
+/** TVA d'un produit figée dès qu'il a eu un mouvement autre que sa création. */
+const tvaVerrouillee = async (stockId) => !!(await MouvementStock.exists({ stock: stockId, type: { $ne: 'CREATION' } }));
 const { getTenant, runWithTenant } = require('../config/tenantContext');
 const { logAction } = require('../services/historyService');
 const { AppError } = require('../utils/appError');
@@ -135,8 +138,12 @@ exports.getAll = async (req, res) => {
       );
     }
 
+    // ✅ TVA figée = au moins un mouvement autre que la création
+    const figes = new Set((await MouvementStock.distinct('stock', {
+      stock: { $in: filtered.map((s) => s._id) }, type: { $ne: 'CREATION' },
+    })).map(String));
     const data = filtered.map((s) => {
-      const obj = s.toObject();
+      const obj = { ...s.toObject(), tvaVerrouillee: figes.has(String(s._id)) };
       let etatCalc = 'ok';
       if (s.quantite === 0) etatCalc = 'rupture';
       else if (s.quantite <= s.seuilAlerte) etatCalc = 'faible';
@@ -224,6 +231,15 @@ exports.create = async (req, res) => {
       quantite, seuilAlerte, prixIndicatif, observation,
       code, unite, coutManuel, commissionActive, coutUnitaire, usage,
     } = req.body;
+    const vide = (v) => v === undefined || v === null || v === '';
+    // ✅ TVA propre au produit : à défaut, taux de la boutique (puis figée au 1er mouvement)
+    let tauxTVA = vide(req.body.tauxTVA) ? null : Number(req.body.tauxTVA);
+    if (tauxTVA !== null && !(tauxTVA >= 0 && tauxTVA <= 100)) {
+      return res.status(400).json({ success: false, message: 'Taux de TVA invalide' });
+    }
+    if (tauxTVA === null) {
+      try { tauxTVA = (await getParametres(requireBoutiqueId())).tauxTVA ?? 19; } catch { tauxTVA = 19; }
+    }
 
     if (usage !== undefined && !Stock.USAGES.includes(usage)) {
       return res.status(400).json({ success: false, message: 'Usage invalide (reparation, vente ou mixte)' });
@@ -265,6 +281,7 @@ exports.create = async (req, res) => {
       quantite: Number(quantite) || 0,
       seuilAlerte: Number(seuilAlerte) || 2,
       prixIndicatif: Number(prixIndicatif) || 0,
+      prixVente: vide(req.body.prixVente) ? null : Number(req.body.prixVente),
       observation: observation || '',
       // ✅ Fiche article
       code: code ? String(code).trim().toUpperCase() : null,
@@ -272,7 +289,7 @@ exports.create = async (req, res) => {
       coutManuel: coutManuel !== undefined && coutManuel !== null && coutManuel !== '' ? Number(coutManuel) : null,
       commissionActive: commissionActive !== false,
       usage: usage || 'reparation',
-      tauxTVA: req.body.tauxTVA === undefined || req.body.tauxTVA === null || req.body.tauxTVA === '' ? null : Number(req.body.tauxTVA),
+      tauxTVA,
       // Valorisation initiale (si un coût unitaire est fourni)
       cmp: coutUnitaire !== undefined && coutUnitaire !== null && coutUnitaire !== '' ? money.round3(coutUnitaire) : null,
       dernierCoutAchat: coutUnitaire !== undefined && coutUnitaire !== null && coutUnitaire !== '' ? money.round3(coutUnitaire) : null,
@@ -339,6 +356,10 @@ exports.update = async (req, res) => {
     if (req.body.tauxTVA !== undefined) {
       const t = req.body.tauxTVA === null || req.body.tauxTVA === '' ? null : Number(req.body.tauxTVA);
       if (t !== null && !(t >= 0 && t <= 100)) return res.status(400).json({ success: false, message: 'Taux de TVA invalide' });
+      // ✅ TVA figée dès le premier mouvement (hors création de la ligne)
+      if (t !== stock.tauxTVA && await tvaVerrouillee(stock._id)) {
+        return res.status(409).json({ success: false, code: 'TVA_FIGEE', message: 'La TVA de ce produit est figée : il a déjà eu des mouvements de stock.' });
+      }
       stock.tauxTVA = t;
     }
 
@@ -366,6 +387,9 @@ exports.update = async (req, res) => {
 
     if (seuilAlerte !== undefined) stock.seuilAlerte = Number(seuilAlerte);
     if (prixIndicatif !== undefined) stock.prixIndicatif = Number(prixIndicatif);
+    if (req.body.prixVente !== undefined) {
+      stock.prixVente = req.body.prixVente === null || req.body.prixVente === '' ? null : Number(req.body.prixVente);
+    }
     if (observation !== undefined) stock.observation = observation;
 
     await stock.save();
@@ -623,7 +647,8 @@ exports.getCout = async (req, res) => {
       dernierCoutAchat: stock.dernierCoutAchat,
       coutManuel: stock.coutManuel,
       prixIndicatif: stock.prixIndicatif,
-      prixVente: stock.prixIndicatif, // prix de vente / réparation (champ existant)
+      prixVente: Stock.prixVenteDe(stock),
+      tauxTVA: stock.tauxTVA,
       coutReference: ref.cout,
       sourceCout: ref.source,
       estime: ref.source === 'ESTIME',
@@ -665,7 +690,7 @@ exports.transfert = async (req, res) => {
     if (!dst) {
       [dst] = await Stock.create([{
         ...combo, boutique: boutiqueDestination, quantite: 0, seuilAlerte: src.seuilAlerte,
-        prixIndicatif: src.prixIndicatif, unite: src.unite,
+        prixIndicatif: src.prixIndicatif, prixVente: src.prixVente, tauxTVA: src.tauxTVA, unite: src.unite,
         commissionActive: src.commissionActive, usage: src.usage || 'reparation', createdBy: userId,
       }], so(session));
     }
@@ -684,6 +709,47 @@ exports.transfert = async (req, res) => {
 
   await logAction({ entityType: 'Stock', entityId: src._id, action: 'TRANSFER', userId, req, comment: `${qte} → ${boutiqueDestination}`, newValue: { coutUnitaire: result.out.coutUnitaire } });
   res.json({ success: true, message: `Transfert de ${qte} unité(s) effectué`, data: { destinationStock: result.destination, coutUnitaire: result.out.coutUnitaire } });
+};
+
+// ============================================================
+// ✅ POST - Entrée en stock d'un produit existant (bouton « + »)
+//    { quantite, coutUnitaireHT, motif }  → CMUP recalculé, dernier prix d'achat mis à jour
+//    Le coût est HT (TVA récupérable) ; la TVA du produit ne change pas.
+// ============================================================
+exports.entreeStock = async (req, res) => {
+  const quantite = Number(req.body.quantite);
+  if (!Number.isInteger(quantite) || quantite <= 0) throw new AppError('Quantité invalide (entier > 0)');
+  const brut = req.body.coutUnitaireHT;
+  if (brut === undefined || brut === null || brut === '' || !(Number(brut) >= 0)) {
+    throw new AppError("Prix d'achat HT obligatoire");
+  }
+  const coutHT = money.round3(Number(brut));
+  const motif = String(req.body.motif || '').trim() || 'Entrée en stock';
+  const userId = req.user._id;
+
+  const result = await withTransaction(async (session) => {
+    const st = await Stock.findById(req.params.id).session(session || null);
+    if (!st) throw new AppError('Article introuvable', 404);
+    const params = await getParametres(st.boutique, session);
+    await assertPeriodeOuverte(st.boutique, new Date(), session);
+    const cmpAvant = st.cmp ?? null;
+    const qteAvant = st.quantite;
+    const inn = await valorisation.entree({
+      stockId: st._id, quantite, coutUnitaire: coutHT, params, session, userId,
+      type: 'ENTREE_ACHAT', motif, sourceType: 'EntreeStock',
+      lotSource: `ENTREE:${Date.now()}`, majDernierCout: true,
+    });
+    return { stockId: st._id, cmpAvant, cmpApres: inn.cmp, qteAvant, qteApres: inn.quantiteApres };
+  });
+
+  await logAction({
+    entityType: 'Stock', entityId: result.stockId, action: 'UPDATE', userId, req,
+    oldValue: { quantite: result.qteAvant, cmp: result.cmpAvant },
+    newValue: { quantite: result.qteApres, cmp: result.cmpApres },
+    comment: `Entrée en stock : +${quantite} à ${coutHT} HT`,
+  });
+  const data = await populateStock(Stock.findById(result.stockId));
+  res.json({ success: true, message: `Entrée en stock : +${quantite}`, data, cmpAvant: result.cmpAvant, cmpApres: result.cmpApres });
 };
 
 // ============================================================

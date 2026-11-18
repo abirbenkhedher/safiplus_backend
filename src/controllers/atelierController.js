@@ -11,7 +11,7 @@ const { AppError } = require('../utils/appError');
 // ============================================================
 const EDITABLE = [
   'methodeValorisation',
-  'prixTTC', 'tauxTVA', 'remisesDeduites', 'commissionSurSAV', 'periodicitePaie',
+  'prixTTC', 'tauxTVA', 'tauxTVAAutorises', 'remisesDeduites', 'commissionSurSAV', 'periodicitePaie',
   'commerce', // ✅ en-tête des documents de vente
 ];
 
@@ -34,6 +34,12 @@ const appliquerParametres = async (boutique, body, req) => {
   if (!doc) doc = new ParametresAtelier({ boutique });
   const before = doc.toObject();
 
+  if (body.tauxTVAAutorises !== undefined) {
+    const l = [...new Set((Array.isArray(body.tauxTVAAutorises) ? body.tauxTVAAutorises : String(body.tauxTVAAutorises).split(/[;, ]+/))
+      .filter((x) => x !== '' && x !== null).map(Number))].sort((a, b) => a - b);
+    if (!l.length || l.some((t) => !(t >= 0 && t <= 100))) throw new AppError('Taux de TVA autorisés invalides (ex. : 7, 19)');
+    body = { ...body, tauxTVAAutorises: l };
+  }
   for (const k of EDITABLE) if (body[k] !== undefined) doc[k] = body[k];
 
   // §5 : changement de mode de stock = validation explicite + historique

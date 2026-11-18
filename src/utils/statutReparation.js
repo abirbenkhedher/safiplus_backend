@@ -17,7 +17,8 @@ const normalizeStatusLabel = (label) =>
     .trim();
 
 const STATUTS_NON_REPARE = ['NON REPARE', 'SAV NON REPARE', 'SORTIE NON REPARE', 'SAV SORTIE NON REPARE'];
-const STATUTS_CLOTURE = ['REPARE', 'SAV REPARE', 'SORTIE REPARE', 'SAV SORTIE REPARE'];
+// Seul « Sortie réparé(e) » clôture (un simple « Réparé » ne clôture jamais).
+const STATUTS_CLOTURE = ['SORTIE REPARE', 'SAV SORTIE REPARE'];
 
 const tokens = (label) => normalizeStatusLabel(label).split(' ');
 
@@ -51,7 +52,7 @@ const resteAPayer = (r) =>
   Math.max(0, Math.round((prixTotalReparation(r) - (Number(r?.acompte) || 0)) * 1000) / 1000);
 
 /**
- * ✅ Règle de clôture : statut « réparé / sortie réparé » ET reste à payer = 0
+ * ✅ Règle de clôture : statut « sortie réparé » (pas « réparé » seul) ET reste à payer = 0
  * (y compris une réparation gratuite, prix 0).
  */
 const doitEtreCloturee = (reparation, statusLabel) =>

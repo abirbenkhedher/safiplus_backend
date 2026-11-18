@@ -12,6 +12,7 @@ const DEFAULTS = {
   methodeValorisation: 'CMP',
   prixTTC: true,
   tauxTVA: 19,
+  tauxTVAAutorises: [7, 19],
   remisesDeduites: true,
   commissionSurSAV: false,
   periodicitePaie: 'mensuelle',

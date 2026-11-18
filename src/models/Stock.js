@@ -39,11 +39,17 @@ const stockSchema = new mongoose.Schema({
     default: 2,
     min: 0,
   },
+  // ✅ Prix de RÉPARATION : purement indicatif (jamais utilisé dans les calculs ;
+  //    les commissions utilisent le prix du dossier de réparation).
   prixIndicatif: {
     type: Number,
     default: 0,
     min: 0,
   },
+  // ✅ Prix de VENTE (comptoir, devis, factures), distinct du prix de réparation.
+  //    Même base que les prix de la boutique (TTC par défaut). null = ancien
+  //    article : on reprend prixIndicatif.
+  prixVente: { type: Number, default: null, min: 0 },
   observation: { type: String, trim: true, default: '' },
 
   // ============================================================
@@ -71,6 +77,10 @@ const stockSchema = new mongoose.Schema({
 
 // ✅ Multi-tenant (doit être déclaré AVANT les autres hooks)
 stockSchema.plugin(tenantPlugin, { scope: 'boutique', requireBoutique: true });
+
+/** Prix de vente effectif (anciens articles : prix unique d'avant). */
+stockSchema.statics.prixVenteDe = (st) => (st?.prixVente !== null && st?.prixVente !== undefined
+  ? Number(st.prixVente) : Number(st?.prixIndicatif) || 0);
 
 // ⚠️ Unicité par combinaison complète
 stockSchema.index(

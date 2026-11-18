@@ -75,7 +75,7 @@ exports.getOne = async (req, res) => {
       ? Reglement.find({ 'affectations.document': doc._id }).select('numero date mode montant reference statut affectations sens').sort({ date: 1 }).lean()
       : [],
     payable
-      ? DocumentVente.find({ factureOrigine: doc._id, isDeleted: false }).select('numero statut netAPayer date').lean()
+      ? DocumentVente.find({ factureOrigine: doc._id, isDeleted: false }).select('numero statut netAPayer date nature').lean()
       : [],
     DocumentVente.find({ origines: doc._id, isDeleted: false }).select('type numero statut').lean(),
   ]);
@@ -110,9 +110,14 @@ exports.remove = async (req, res) => {
 
 // POST /api/ventes/:id/valider
 exports.valider = async (req, res) => {
-  const doc = await svc.valider(oid(req.params.id), req.user._id);
+  const doc = await svc.valider(oid(req.params.id), req.user._id, { remboursement: req.body?.remboursement });
   await log(req, doc, 'VALIDATE', `${doc.type} ${doc.numero} validé(e) — ${doc.netAPayer} DT`);
-  res.json({ success: true, message: `${doc.numero} validé`, data: doc });
+  const rembourse = doc.$locals?.rembourse;
+  res.json({
+    success: true,
+    message: `${doc.numero} validé${rembourse > 0 ? ` — ${rembourse} DT remboursé(s)` : rembourse === 0 ? ' — rien à rembourser (facture non payée : sa dette diminue)' : ''}`,
+    data: doc, rembourse: rembourse ?? null,
+  });
 };
 
 // POST /api/ventes/:id/statut  { statut: accepte | refuse | valide }
@@ -138,9 +143,11 @@ exports.transformer = async (req, res) => {
 
 // POST /api/ventes/:id/avoir
 exports.avoir = async (req, res) => {
-  const doc = await svc.creerAvoir(oid(req.params.id), req.user._id);
-  await log(req, doc, 'CREATE', 'Avoir (brouillon) créé');
-  res.status(201).json({ success: true, message: 'Avoir créé en brouillon', data: await avecClient(doc) });
+  const nature = req.body?.nature === 'retour' ? 'retour' : 'avoir';
+  const doc = await svc.creerAvoir(oid(req.params.id), req.user._id, nature);
+  const lib = nature === 'retour' ? 'Bon de retour' : 'Avoir';
+  await log(req, doc, 'CREATE', `${lib} (brouillon) créé`);
+  res.status(201).json({ success: true, message: `${lib} créé en brouillon`, data: await avecClient(doc) });
 };
 
 // POST /api/ventes/depuis  { type, client, reparations: [], bls: [] }
@@ -193,7 +200,7 @@ exports.parReparation = async (req, res) => {
 // GET /api/ventes/parametres → en-tête + valeurs par défaut (pour les formulaires / impression)
 exports.parametres = async (req, res) => {
   const p = await getParametres(requireBoutiqueId());
-  res.json({ success: true, data: { prixTTC: p.prixTTC, tauxTVA: p.tauxTVA, commerce: p.commerce, modeStock: p.modeStock } });
+  res.json({ success: true, data: { prixTTC: p.prixTTC, tauxTVA: p.tauxTVA, tauxTVAAutorises: p.tauxTVAAutorises, commerce: p.commerce, modeStock: p.modeStock } });
 };
 
 // ============================================================
@@ -205,13 +212,13 @@ exports.articlesComptoir = async (req, res) => {
   const boutique = requireBoutiqueId();
   const q = { boutique, isActive: { $ne: false }, ...Stock.filtreUsage('vente') };
   const list = await Stock.find(q)
-    .select('code quantite prixIndicatif unite typeArticle marque modele categorie tauxTVA')
+    .select('code quantite prixIndicatif prixVente unite typeArticle marque modele categorie tauxTVA')
     .populate('typeArticle marque modele categorie', 'nom')
     .lean();
   const s = String(req.query.search || '').trim().toLowerCase();
   const label = (a) => [a.typeArticle?.nom, a.marque?.nom, a.modele?.nom].filter(Boolean).join(' ');
   const data = list
-    .map((a) => ({ _id: a._id, code: a.code || '', designation: label(a) || a.code || 'Article', categorie: a.categorie?.nom || '', quantite: a.quantite, prix: a.prixIndicatif || 0, unite: a.unite || '', tauxTVA: a.tauxTVA ?? null }))
+    .map((a) => ({ _id: a._id, code: a.code || '', designation: label(a) || a.code || 'Article', categorie: a.categorie?.nom || '', quantite: a.quantite, prix: Stock.prixVenteDe(a), unite: a.unite || '', tauxTVA: a.tauxTVA ?? null }))
     .filter((a) => !s || a.code.toLowerCase() === s || `${a.code} ${a.designation} ${a.categorie}`.toLowerCase().includes(s))
     .sort((a, b) => a.designation.localeCompare(b.designation, 'fr'))
     .slice(0, 50);
@@ -261,7 +268,8 @@ const logR = (req, r, action, comment) => logAction({
 exports.listReglements = async (req, res) => {
   const q = {};
   if (req.query.client) q.client = oid(req.query.client, 'Client');
-  if (req.query.mode) q.mode = req.query.mode;
+  // mode=CHEQUE,TRAITE → portefeuille des effets
+  if (req.query.mode) q.mode = String(req.query.mode).includes(',') ? { $in: String(req.query.mode).split(',') } : req.query.mode;
   if (req.query.statut) q.statut = req.query.statut;
   if (req.query.etatCheque) q.etatCheque = req.query.etatCheque;
   if (req.query.from || req.query.to) {

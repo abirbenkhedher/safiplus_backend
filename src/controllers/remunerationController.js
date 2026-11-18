@@ -62,7 +62,7 @@ exports.listReparateurs = async (req, res) => {
 // ------------------------------------------------------------
 // Règles de commission (versionnées)
 // ------------------------------------------------------------
-const RULE_FIELDS = ['nom', 'reparateur', 'boutiqueCible', 'article', 'categorie', 'typeArticle', 'panne', 'typeCalcul', 'base', 'taux', 'montantFixe', 'paliers', 'validFrom', 'validTo', 'priorite'];
+const RULE_FIELDS = ['nom', 'reparateur', 'boutiqueCible', 'article', 'categorie', 'famille', 'typeArticle', 'panne', 'typeCalcul', 'base', 'taux', 'montantFixe', 'paliers', 'validFrom', 'validTo', 'priorite'];
 const pickRule = (b) => {
   const o = {};
   for (const k of RULE_FIELDS) if (b[k] !== undefined) o[k] = b[k] === '' ? null : b[k];
@@ -76,7 +76,7 @@ exports.listRegles = async (req, res) => {
   if (req.query.actif !== 'all') q.actif = true;
   if (req.query.reparateur) q.reparateur = req.query.reparateur;
   const data = await RegleCommission.find(q)
-    .populate('reparateur', userPop).populate('categorie', 'nom').populate('typeArticle', 'nom').populate('boutiqueCible', 'nom code')
+    .populate('reparateur', userPop).populate('categorie', 'nom').populate('famille', 'nom').populate('typeArticle', 'nom').populate('boutiqueCible', 'nom code')
     .populate({ path: 'article', select: 'code typeArticle marque modele', populate: [{ path: 'typeArticle', select: 'nom' }, { path: 'marque', select: 'nom' }, { path: 'modele', select: 'nom' }] })
     .sort({ actif: -1, validFrom: -1 }).lean();
   const now = new Date();

@@ -13,8 +13,12 @@ const { toM, fromM } = require('../utils/money');
 //   consommées dans le dossier de réparation).
 // ============================================================
 // TICKET = vente comptoir (validée et encaissée immédiatement, pas de timbre)
-const TYPES = ['DEVIS', 'BL', 'FACTURE', 'AVOIR', 'TICKET'];
-const PREFIXES = { DEVIS: 'DV', BL: 'BL', FACTURE: 'FA', AVOIR: 'AV', TICKET: 'TK' };
+// BC = bon de commande client (ni stock ni argent ; se transforme en BL / facture)
+const TYPES = ['DEVIS', 'BC', 'BL', 'FACTURE', 'AVOIR', 'TICKET'];
+const PREFIXES = { DEVIS: 'DV', BC: 'BC', BL: 'BL', FACTURE: 'FA', AVOIR: 'AV', TICKET: 'TK' };
+// ✅ AVOIR : nature « avoir » = l'argent sort, la marchandise ne revient PAS en stock ;
+//            nature « retour » (bon de retour, BR) = la marchandise revient en stock ET l'argent sort.
+const NATURES_AVOIR = ['avoir', 'retour'];
 const STATUTS = ['brouillon', 'valide', 'accepte', 'refuse', 'transforme', 'annule'];
 const TYPES_LIGNE = ['article', 'libre', 'reparation'];
 
@@ -28,6 +32,10 @@ const ligneSchema = new mongoose.Schema({
   unite: { type: String, trim: true, default: '' },
   prixUnitaire: { type: Number, required: true, min: [0, 'Prix invalide'] }, // HT ou TTC selon le document
   remisePct: { type: Number, default: 0, min: 0, max: 100 },
+  // ✅ Remise de ligne : en % (remisePct) ou en montant (remiseMontant, total de la ligne, base du document)
+  remiseType: { type: String, enum: ['pct', 'montant'], default: 'pct' },
+  remiseMontant: { type: Number, default: 0, min: 0 },
+  remiseGlobale: { type: Number, default: 0 }, // quote-part de la remise globale (calculée, base du document)
   tauxTVA: { type: Number, default: 0, min: 0, max: 100 },
   // Calculés
   montantHT: { type: Number, default: 0 },
@@ -67,6 +75,12 @@ const documentVenteSchema = new mongoose.Schema({
   totalTVA: { type: Number, default: 0 },
   totalTTC: { type: Number, default: 0 },
   tvaParTaux: [{ _id: false, taux: Number, base: Number, montant: Number }],
+  // ✅ Remise sur tout le document : % ou montant (base du document), répartie sur les lignes
+  //    au prorata (avant TVA) pour que chaque taux reste juste
+  remiseGlobaleType: { type: String, enum: ['pct', 'montant'], default: 'pct' },
+  remiseGlobaleValeur: { type: Number, default: 0, min: 0 },
+  remiseGlobaleMontant: { type: Number, default: 0 }, // calculé
+  totalAvantRemise: { type: Number, default: 0 },     // calculé : Σ lignes après remise de ligne
   appliquerTimbre: { type: Boolean, default: true },
   timbreFiscal: { type: Number, default: 0, min: 0 },
   netAPayer: { type: Number, default: 0 },
@@ -74,6 +88,8 @@ const documentVenteSchema = new mongoose.Schema({
   // Liens
   origines: [{ type: mongoose.Schema.Types.ObjectId, ref: 'DocumentVente' }], // devis / BL d'origine
   factureOrigine: { type: mongoose.Schema.Types.ObjectId, ref: 'DocumentVente', default: null, index: true }, // avoir
+  nature: { type: String, enum: [...NATURES_AVOIR, null], default: null }, // AVOIR seulement
+  reglementRemboursement: { type: mongoose.Schema.Types.ObjectId, ref: 'Reglement', default: null },
   reparations: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reparation', index: true }],
 
   // Paiement (factures) : agrégats maintenus par les règlements / avoirs
@@ -81,6 +97,8 @@ const documentVenteSchema = new mongoose.Schema({
   montantAvoirs: { type: Number, default: 0 },
 
   conditionsPaiement: { type: String, trim: true, default: '' },
+  // ✅ Mode de paiement prévu (ESPECES, CHEQUE, TRAITE, VIREMENT, CARTE, AUTRE) ; traite : dateEcheance
+  modePaiement: { type: String, default: null },
   observation: { type: String, trim: true, default: '' },
   motifAnnulation: { type: String, trim: true, default: '' },
 
@@ -102,15 +120,43 @@ documentVenteSchema.index(
 documentVenteSchema.index({ client: 1, type: 1, statut: 1 });
 
 /** Calcule les montants des lignes et les totaux (au millime). */
+/** Net d'une ligne après SA remise (millimes, base du document). */
+const netLigneM = (l) => {
+  const brut = Math.round(toM(l.prixUnitaire) * Number(l.quantite));
+  if (l.remiseType === 'montant') return Math.max(0, brut - toM(l.remiseMontant));
+  return Math.round(brut * (1 - (Number(l.remisePct) || 0) / 100));
+};
+
+/** Répartit G millimes au prorata des montants (somme exacte, reste aux plus gros). */
+const repartirM = (G, montants) => {
+  const total = montants.reduce((s, m) => s + m, 0);
+  if (!G || total <= 0) return montants.map(() => 0);
+  const parts = montants.map((m) => Math.floor((G * m) / total));
+  let reste = G - parts.reduce((s, p) => s + p, 0);
+  const ordre = montants.map((m, i) => i).sort((a, b) => montants[b] - montants[a]);
+  for (let k = 0; reste > 0; k = (k + 1) % ordre.length) { parts[ordre[k]] += 1; reste -= 1; }
+  return parts;
+};
+
 documentVenteSchema.methods.calculer = function () {
   const ttcMode = this.prixSaisis === 'TTC';
   let tHT = 0; let tTVA = 0;
   const parTaux = new Map();
-  for (const l of this.lignes || []) {
+  const lignes = this.lignes || [];
+  // 1) remise de chaque ligne ; 2) remise globale répartie au prorata ; 3) HT / TVA par taux
+  const nets = lignes.map(netLigneM);
+  const sommeM = nets.reduce((s, n) => s + n, 0);
+  const v = Number(this.remiseGlobaleValeur) || 0;
+  const G = this.remiseGlobaleType === 'montant'
+    ? Math.min(toM(v), sommeM)
+    : Math.round((sommeM * Math.min(100, v)) / 100);
+  const parts = repartirM(G, nets);
+  this.totalAvantRemise = fromM(sommeM);
+  this.remiseGlobaleMontant = fromM(G);
+  lignes.forEach((l, i) => {
     const t = Number(l.tauxTVA) || 0;
-    const r = Number(l.remisePct) || 0;
-    const brut = Math.round(toM(l.prixUnitaire) * Number(l.quantite));
-    const net = Math.round(brut * (1 - r / 100));
+    const net = nets[i] - parts[i];
+    l.remiseGlobale = fromM(parts[i]);
     let ht; let tva;
     if (ttcMode) {
       ht = Math.round(net / (1 + t / 100));
@@ -126,7 +172,7 @@ documentVenteSchema.methods.calculer = function () {
     const p = parTaux.get(t) || { base: 0, montant: 0 };
     p.base += ht; p.montant += tva;
     parTaux.set(t, p);
-  }
+  });
   this.totalHT = fromM(tHT);
   this.totalTVA = fromM(tTVA);
   this.totalTTC = fromM(tHT + tTVA);
@@ -145,5 +191,7 @@ const DocumentVente = mongoose.model('DocumentVente', documentVenteSchema);
 DocumentVente.TYPES = TYPES;
 DocumentVente.PREFIXES = PREFIXES;
 DocumentVente.STATUTS = STATUTS;
+DocumentVente.netLigneM = netLigneM;
+DocumentVente.repartirM = repartirM;
 
 module.exports = DocumentVente;

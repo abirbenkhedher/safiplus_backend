@@ -12,7 +12,7 @@ const commissionSchema = new mongoose.Schema({
   // Source
   sourceType: {
     type: String,
-    enum: ['PIECE_REPARATION', 'INTERVENTION', 'AJUSTEMENT'],
+    enum: ['PIECE_REPARATION', 'INTERVENTION', 'AJUSTEMENT', 'BENEFICE_NET'],
     required: true,
   },
   reparation: { type: mongoose.Schema.Types.ObjectId, ref: 'Reparation', default: null },
@@ -39,6 +39,8 @@ const commissionSchema = new mongoose.Schema({
     niveau: String,
   },
   baseMontant: { type: Number, default: 0 },
+  // ✅ Bénéfice net : détail du calcul (marge, dépenses, nb de réparations, famille…)
+  details: { type: mongoose.Schema.Types.Mixed, default: null },
   montant: { type: Number, required: true },
 
   statut: {

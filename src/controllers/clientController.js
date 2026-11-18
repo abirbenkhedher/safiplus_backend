@@ -515,14 +515,14 @@ exports.getOne = async (req, res) => {
         type: { $in: ['FACTURE', 'TICKET', 'BL', 'AVOIR'] },
         statut: { $nin: ['brouillon', 'annule'] },
       })
-        .select('type numero statut date netAPayer totalTTC montantRegleDirect montantAvoirs reparations lignes.designation lignes.quantite createdAt')
+        .select('type nature numero statut date netAPayer totalTTC montantRegleDirect montantAvoirs reparations lignes.designation lignes.quantite createdAt')
         .sort({ date: -1, createdAt: -1 })
         .limit(500)
         .lean();
       const infos = await infosPaiementMany(docs);
       ventes = docs.map((d) => ({
         _id: d._id,
-        type: d.type,
+        type: d.type === 'AVOIR' && d.nature === 'retour' ? 'RETOUR' : d.type,
         numero: d.numero,
         statut: d.statut,
         date: d.date || d.createdAt,

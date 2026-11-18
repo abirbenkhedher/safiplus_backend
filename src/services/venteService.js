@@ -35,8 +35,10 @@ const nextSeq = async (key, session) => {
 
 const numeroDocument = async (doc, session) => {
   const year = new Date(doc.date || Date.now()).getFullYear();
-  const prefix = DocumentVente.PREFIXES[doc.type];
-  const seq = await nextSeq(`vente:${doc.type}:${doc.boutique}:${year}`, session);
+  // ✅ Bon de retour : numérotation propre (BR-AAAA-0001), distincte des avoirs
+  const retour = doc.type === 'AVOIR' && doc.nature === 'retour';
+  const prefix = retour ? 'BR' : DocumentVente.PREFIXES[doc.type];
+  const seq = await nextSeq(`vente:${retour ? 'RETOUR' : doc.type}:${doc.boutique}:${year}`, session);
   return `${prefix}-${year}-${String(seq).padStart(4, '0')}`;
 };
 
@@ -76,14 +78,14 @@ const versBaseDocument = (prix, params, prixSaisis, tva) => {
   if (sourceTTC === cibleTTC || !tva) return p;
   return round3(cibleTTC ? p * (1 + tva / 100) : p / (1 + tva / 100));
 };
-const prixArticle = (st, params, prixSaisis, tva) => versBaseDocument(st.prixIndicatif, params, prixSaisis, tva);
+const prixArticle = (st, params, prixSaisis, tva) => versBaseDocument(Stock.prixVenteDe(st), params, prixSaisis, tva);
 
 /**
  * Normalise les lignes reçues du client.
  * Les lignes « article » doivent appartenir à la boutique ; les lignes
  * « réparation » au même client et à la même boutique.
  */
-const buildLignes = async (raw, { boutique, client, params, type, origines = {}, prixSaisis = baseCommerce(params) }) => {
+const buildLignes = async (raw, { boutique, client, params, type, nature = null, origines = {}, prixSaisis = baseCommerce(params) }) => {
   if (!Array.isArray(raw)) throw new AppError('Lignes invalides');
   const tvaDefaut = Number(params.tauxTVA) || 0;
   const coutsBL = origines.coutsBL || new Map();         // `${blId}:${stockId}` → coût (stock déjà sorti)
@@ -94,14 +96,18 @@ const buildLignes = async (raw, { boutique, client, params, type, origines = {},
     if (!(quantite > 0)) throw new AppError('Quantité invalide sur une ligne');
     const remisePct = num(l.remisePct, 0);
     if (!(remisePct >= 0 && remisePct <= 100)) throw new AppError('Remise invalide (0 à 100 %)');
+    const remiseType = l.remiseType === 'montant' ? 'montant' : 'pct';
+    const remiseMontant = remiseType === 'montant' ? num(l.remiseMontant, 0) : 0;
+    if (!(remiseMontant >= 0)) throw new AppError('Remise en montant invalide');
     const tauxTVA = num(l.tauxTVA, tvaDefaut);
     if (!(tauxTVA >= 0 && tauxTVA <= 100)) throw new AppError('Taux de TVA invalide');
     // Jamais pris du client : « stock déjà sorti » et coût viennent du BL / de la facture d'origine
     const cleBL = l.origineDocument && l.stock ? `${l.origineDocument}:${l.stock}` : null;
     const depuisBL = !!cleBL && coutsBL.has(cleBL);
     const base = {
-      quantite, remisePct, tauxTVA,
-      retourStock: type === 'AVOIR' ? l.retourStock !== false : false,
+      quantite, remisePct: remiseType === 'pct' ? remisePct : 0, remiseType, remiseMontant, tauxTVA,
+      // ✅ Bon de retour : la marchandise revient en stock ; avoir : jamais (l'argent seul sort)
+      retourStock: type === 'AVOIR' && nature === 'retour',
       stockSorti: depuisBL,
       coutUnitaire: depuisBL ? coutsBL.get(cleBL) : type === 'AVOIR' && l.stock ? coutsFacture.get(String(l.stock)) ?? null : null,
       origineDocument: depuisBL ? l.origineDocument : null,
@@ -116,7 +122,7 @@ const buildLignes = async (raw, { boutique, client, params, type, origines = {},
       if (!sameId(r.boutique, boutique)) throw new AppError(`Réparation ${r.numero} : autre boutique`);
       if (!sameId(r.client, client)) throw new AppError(`Réparation ${r.numero} : autre client`);
       out.push({
-        ...base, type: 'reparation', reparation: r._id, stock: null, code: r.numero || '',
+        ...base, retourStock: false, type: 'reparation', reparation: r._id, stock: null, code: r.numero || '',
         designation: String(l.designation || '').trim() || designationReparation(r),
         quantite: 1, unite: '',
         prixUnitaire: num(l.prixUnitaire, versBaseDocument(prixTotalReparation(r), params, prixSaisis, base.tauxTVA)),
@@ -222,6 +228,11 @@ const ajusterAcompte = async (repId, deltaM, { session, userId }) => {
       rep.modifications.push({ field: 'dateCloture', oldValue: null, newValue: rep.dateCloture, modifiedBy: userId, modifiedAt: new Date() });
       cloturee = true;
     }
+  } else if (rep.dateCloture && deltaM < 0 && toM(prixTotalReparation(rep)) - apresM > 0) {
+    // Acompte annulé → le reste n'est plus 0 : la réparation n'est plus clôturée
+    rep.modifications.push({ field: 'dateCloture', oldValue: rep.dateCloture, newValue: null, modifiedBy: userId, modifiedAt: new Date(), comment: 'Déclôture automatique (reste à payer > 0)' });
+    rep.dateCloture = null;
+    cloturee = true; // changement de clôture → commissions à recalculer
   }
   await rep.save(so(session));
   return { applique: apresM - avantM, cloturee };
@@ -283,10 +294,23 @@ const appliquerChamps = async (doc, body, params, { creation }) => {
   if (body.dateEcheance !== undefined) doc.dateEcheance = body.dateEcheance ? new Date(body.dateEcheance) : null;
   if (body.dateValidite !== undefined) doc.dateValidite = body.dateValidite ? new Date(body.dateValidite) : null;
   if (body.appliquerTimbre !== undefined) doc.appliquerTimbre = !!body.appliquerTimbre;
+  // ✅ Remise globale (% ou montant)
+  if (body.remiseGlobaleType !== undefined) doc.remiseGlobaleType = body.remiseGlobaleType === 'montant' ? 'montant' : 'pct';
+  if (body.remiseGlobaleValeur !== undefined) {
+    const v = num(body.remiseGlobaleValeur, 0);
+    if (!(v >= 0) || (doc.remiseGlobaleType !== 'montant' && v > 100)) throw new AppError('Remise globale invalide');
+    doc.remiseGlobaleValeur = v;
+  }
+  // ✅ Mode de paiement prévu (BL, facture…) : espèces, chèque, traite…
+  if (body.modePaiement !== undefined) {
+    const m = body.modePaiement || null;
+    if (m && !Reglement.MODES.includes(m)) throw new AppError('Mode de paiement invalide');
+    doc.modePaiement = m;
+  }
   ['conditionsPaiement', 'observation'].forEach((k) => { if (body[k] !== undefined) doc[k] = String(body[k] || ''); });
   if (body.lignes !== undefined) {
     doc.lignes = await buildLignes(body.lignes, {
-      boutique: doc.boutique, client: doc.client, params, type: doc.type, origines: await contexteOrigines(doc), prixSaisis: doc.prixSaisis,
+      boutique: doc.boutique, client: doc.client, params, type: doc.type, nature: doc.nature, origines: await contexteOrigines(doc), prixSaisis: doc.prixSaisis,
     });
   }
   const c = params.commerce || {};
@@ -296,6 +320,17 @@ const appliquerChamps = async (doc, body, params, { creation }) => {
     if (doc.type === 'FACTURE' && !doc.dateEcheance) doc.dateEcheance = addDays(doc.date, c.delaiPaiementJours || 0);
   }
   doc.reparations = [...new Set(doc.lignes.filter((l) => l.reparation).map((l) => String(l.reparation)))];
+  // ✅ Contrôles des remises : jamais plus que le montant
+  for (const l of doc.lignes) {
+    const brut = Math.round(toM(l.prixUnitaire) * Number(l.quantite));
+    if (l.remiseType === 'montant' && toM(l.remiseMontant) > brut) {
+      throw new AppError(`« ${l.designation} » : remise (${l.remiseMontant}) supérieure au montant de la ligne (${fromM(brut)})`);
+    }
+  }
+  if (doc.remiseGlobaleType === 'montant') {
+    const somme = doc.lignes.reduce((s, l) => s + DocumentVente.netLigneM(l), 0);
+    if (toM(doc.remiseGlobaleValeur) > somme) throw new AppError(`Remise globale (${doc.remiseGlobaleValeur}) supérieure au total (${fromM(somme)})`);
+  }
 };
 
 const creerBrouillon = async (body, userId) => {
@@ -346,12 +381,14 @@ const supprimerBrouillon = async (id) => {
 const copieLignes = (src) => src.lignes.map((l) => ({
   type: l.type, stock: l.stock, reparation: l.reparation, code: l.code, designation: l.designation,
   quantite: l.quantite, unite: l.unite, prixUnitaire: l.prixUnitaire, remisePct: l.remisePct, tauxTVA: l.tauxTVA,
+  remiseType: l.remiseType || 'pct', remiseMontant: l.remiseMontant || 0,
   // Lignes d'un BL : stock déjà sorti
   stockSorti: src.type === 'BL' && l.stockSorti, coutUnitaire: l.coutUnitaire,
   origineDocument: src.type === 'BL' ? src._id : null,
 }));
 
-const TRANSFORMATIONS = { DEVIS: ['BL', 'FACTURE'], BL: ['FACTURE'] };
+// ✅ Bon de commande client : devis → BC → BL / facture
+const TRANSFORMATIONS = { DEVIS: ['BC', 'BL', 'FACTURE'], BC: ['BL', 'FACTURE'], BL: ['FACTURE'] };
 
 const assertSourceTransformable = async (src, typeCible) => {
   if (!(TRANSFORMATIONS[src.type] || []).includes(typeCible)) {
@@ -373,7 +410,9 @@ const transformer = async (id, typeCible, userId) => {
   const doc = new DocumentVente({
     type: typeCible, boutique: src.boutique, client: src.client, createdBy: userId,
     prixSaisis: src.prixSaisis, origines: [src._id], conditionsPaiement: src.conditionsPaiement,
+    modePaiement: src.modePaiement || null, dateEcheance: src.modePaiement === 'TRAITE' ? src.dateEcheance : null,
     observation: src.observation, appliquerTimbre: src.appliquerTimbre,
+    remiseGlobaleType: src.remiseGlobaleType || 'pct', remiseGlobaleValeur: src.remiseGlobaleValeur || 0,
   });
   doc.lignes = copieLignes(src);
   await appliquerChamps(doc, { prixSaisis: src.prixSaisis }, params, { creation: true });
@@ -421,21 +460,36 @@ const depuis = async ({ type = 'FACTURE', client, reparations = [], bls = [] }, 
   return doc;
 };
 
-const creerAvoir = async (factureId, userId) => {
+/**
+ * Avoir (nature « avoir ») : l'argent sort, la marchandise ne revient pas.
+ * Bon de retour (nature « retour ») : articles seulement, retour en stock + l'argent sort.
+ */
+const creerAvoir = async (factureId, userId, nature = 'avoir') => {
+  if (!['avoir', 'retour'].includes(nature)) throw new AppError('Nature invalide (avoir ou retour)');
   const f = await DocumentVente.findOne({ _id: factureId, type: { $in: PAYABLES }, isDeleted: false });
   if (!f) throw new AppError('Facture introuvable', 404);
-  if (f.statut !== 'valide') throw new AppError('Seule une facture (ou un ticket) validée peut recevoir un avoir', 409);
+  if (f.statut !== 'valide') throw new AppError('Seule une facture (ou un ticket) validée peut recevoir un avoir ou un retour', 409);
   if (toM(f.montantAvoirs) >= toM(f.netAPayer)) throw new AppError('Facture déjà entièrement annulée par avoir', 409);
+  const retour = nature === 'retour';
+  const sources = retour ? f.lignes.filter((l) => l.type === 'article' && l.stockSorti) : f.lignes;
+  if (!sources.length) throw new AppError('Aucun article sorti du stock sur cette facture : faites un avoir', 409);
   const doc = new DocumentVente({
-    type: 'AVOIR', boutique: f.boutique, client: f.client, createdBy: userId, prixSaisis: f.prixSaisis,
-    factureOrigine: f._id, observation: `Avoir sur facture ${f.numero}`,
+    type: 'AVOIR', nature, boutique: f.boutique, client: f.client, createdBy: userId, prixSaisis: f.prixSaisis,
+    factureOrigine: f._id, observation: `${retour ? 'Bon de retour' : 'Avoir'} sur ${f.numero}`,
   });
-  doc.lignes = f.lignes.map((l) => ({
-    type: l.type, stock: l.stock, reparation: l.reparation, code: l.code, designation: l.designation,
-    quantite: l.quantite, unite: l.unite, prixUnitaire: l.prixUnitaire, remisePct: l.remisePct, tauxTVA: l.tauxTVA,
-    retourStock: l.type === 'article' && l.stockSorti, coutUnitaire: l.coutUnitaire,
-  }));
-  doc.reparations = f.reparations;
+  // ✅ Remises de la facture reprises ligne par ligne : % équivalent (remise de ligne + quote-part
+  //    de la remise globale), exact pour la quantité facturée et proportionnel si on la réduit
+  doc.lignes = sources.map((l) => {
+    const brut = Math.round(toM(l.prixUnitaire) * Number(l.quantite));
+    const final = DocumentVente.netLigneM(l) - toM(l.remiseGlobale || 0);
+    const pct = brut > 0 ? Math.min(100, Math.max(0, ((brut - final) / brut) * 100)) : 0;
+    return {
+      type: l.type, stock: l.stock, reparation: l.reparation, code: l.code, designation: l.designation,
+      quantite: l.quantite, unite: l.unite, prixUnitaire: l.prixUnitaire, remiseType: 'pct', remisePct: pct, tauxTVA: l.tauxTVA,
+      retourStock: retour, coutUnitaire: l.coutUnitaire,
+    };
+  });
+  doc.reparations = retour ? [] : f.reparations;
   await doc.save();
   return doc;
 };
@@ -470,18 +524,18 @@ const quantitesRetournees = async (factureId, excludeId, session) => {
   return m;
 };
 
-const valider = async (id, userId) => {
+const valider = async (id, userId, opts = {}) => {
   // Contrôles préalables hors transaction (messages clairs, pas de numéro consommé)
   const pre = await DocumentVente.findOne({ _id: id, isDeleted: false }).lean();
   if (!pre) throw new AppError('Document introuvable', 404);
   if (pre.statut !== 'brouillon') throw new AppError(`Document déjà ${pre.statut}`, 409, 'DEJA_TRAITE');
   if (!pre.lignes?.length) throw new AppError('Le document ne contient aucune ligne');
 
-  return withTransaction((session) => validerSession(id, userId, session));
+  return withTransaction((session) => validerSession(id, userId, session, opts));
 };
 
 /** Validation dans une transaction existante (utilisée aussi par la vente comptoir). */
-const validerSession = async (id, userId, session) => {
+const validerSession = async (id, userId, session, opts = {}) => {
   {
     const doc = await withSession(DocumentVente.findOne({ _id: id, isDeleted: false, statut: 'brouillon' }), session);
     if (!doc) throw new AppError('Document déjà traité', 409, 'DEJA_TRAITE');
@@ -511,6 +565,9 @@ const validerSession = async (id, userId, session) => {
       const dispoM = toM(facture.netAPayer) - toM(facture.montantAvoirs);
       if (toM(doc.netAPayer) > dispoM) {
         throw new AppError(`Montant de l'avoir (${doc.netAPayer}) supérieur au montant restant de la facture (${fromM(dispoM)})`);
+      }
+      if (doc.nature === 'retour' && doc.lignes.some((l) => l.type !== 'article' || !l.stock)) {
+        throw new AppError('Un bon de retour ne contient que des articles du stock (sinon : faites un avoir)');
       }
       const deja = await quantitesRetournees(facture._id, doc._id, session);
       const factures = new Map();
@@ -559,6 +616,25 @@ const validerSession = async (id, userId, session) => {
 
     if (facture) {
       await DocumentVente.updateOne({ _id: facture._id }, { $inc: { montantAvoirs: doc.netAPayer } }, so(session));
+      // ✅ L'argent sort : remboursement immédiat de ce que le client avait déjà payé (sinon crédit client)
+      const mode = opts.remboursement?.mode;
+      if (mode) {
+        if (!Reglement.MODES.includes(mode)) throw new AppError('Mode de remboursement invalide');
+        const info = await infosPaiement({
+          ...facture.toObject(), montantAvoirs: fromM(toM(facture.montantAvoirs) + toM(doc.netAPayer)),
+        }, session);
+        const montantM = Math.min(toM(info?.credit || 0), toM(doc.netAPayer));
+        if (montantM > 0) {
+          const reg = await enregistrerReglement(session, {
+            boutique: doc.boutique, clientId: doc.client, sens: 'REMBOURSEMENT', montantM,
+            body: { mode, reference: opts.remboursement.reference, observation: `Remboursement ${doc.numero}` },
+            userId, cloturees: [],
+          });
+          doc.reglementRemboursement = reg._id;
+          await doc.save(so(session));
+        }
+        doc.$locals.rembourse = fromM(montantM);
+      }
     }
     if (doc.origines?.length) {
       await DocumentVente.updateMany(
@@ -738,7 +814,7 @@ const enregistrerReglement = async (session, { boutique, clientId, sens, montant
     boutique, client: clientId, sens, date, mode: body.mode, montant: fromM(montantM),
     reference: String(body.reference || '').trim(), banque: String(body.banque || '').trim(),
     dateEcheance: body.dateEcheance ? new Date(body.dateEcheance) : null,
-    etatCheque: body.mode === 'CHEQUE' ? (['encaisse', 'en_portefeuille'].includes(body.etatCheque) ? body.etatCheque : 'en_portefeuille') : null,
+    etatCheque: Reglement.MODES_ECHEANCE.includes(body.mode) ? (['encaisse', 'en_portefeuille'].includes(body.etatCheque) ? body.etatCheque : 'en_portefeuille') : null,
     observation: String(body.observation || '').trim(), createdBy: userId, sessionCaisse,
   });
   if (sens === 'ENCAISSEMENT') {
@@ -889,7 +965,8 @@ const affecterReste = async (id, body, userId) => {
 /** Annulation (ou chèque impayé) : contre-écriture des affectations. */
 const annulerReglement = async (id, motif, userId) => {
   if (!String(motif || '').trim()) throw new AppError("Le motif d'annulation est obligatoire");
-  return withTransaction(async (session) => {
+  const declotures = [];
+  const res = await withTransaction(async (session) => {
     const r = await withSession(Reglement.findOneAndUpdate(
       { _id: id, statut: 'valide' },
       { $set: { statut: 'annule', motifAnnulation: motif, annuleLe: new Date(), annulePar: userId } },
@@ -901,22 +978,25 @@ const annulerReglement = async (id, motif, userId) => {
         await DocumentVente.updateOne({ _id: a.document }, { $inc: { montantRegleDirect: -a.direct } }, so(session));
       }
       for (const x of a.reparations || []) {
-        await ajusterAcompte(x.reparation, -toM(x.montant), { session, userId });
+        const aj = await ajusterAcompte(x.reparation, -toM(x.montant), { session, userId });
+        if (aj.cloturee) declotures.push(x.reparation);
       }
     }
-    if (r.mode === 'CHEQUE' && /impay/i.test(motif)) {
+    if (Reglement.MODES_ECHEANCE.includes(r.mode) && /impay/i.test(motif)) {
       r.etatCheque = 'impaye';
       await r.save(so(session));
     }
     return r;
   });
+  if (declotures.length) syncCommissions(declotures, userId);
+  return res;
 };
 
 const changerEtatCheque = async (id, etat, userId) => {
   if (etat === 'impaye') return annulerReglement(id, 'Chèque impayé', userId);
   if (!['encaisse', 'en_portefeuille'].includes(etat)) throw new AppError('État de chèque invalide');
   const r = await Reglement.findOneAndUpdate(
-    { _id: id, mode: 'CHEQUE', statut: 'valide' }, { $set: { etatCheque: etat } }, { new: true }
+    { _id: id, mode: { $in: Reglement.MODES_ECHEANCE }, statut: 'valide' }, { $set: { etatCheque: etat } }, { new: true }
   );
   if (!r) throw new AppError('Chèque introuvable ou annulé', 404);
   return r;

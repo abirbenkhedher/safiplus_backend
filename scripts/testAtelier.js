@@ -159,7 +159,7 @@ async function main() {
     check('Consommation 2 unités au CMP 65 → coût 130', r.body.cout?.total === 130 && r.body.cout?.source === 'CMP', r.body);
     check('Stock physique décrémenté (18)', r.body.data?.quantite === 18, r.body.data);
 
-    // r1 : rep1 (30% × 400 = 120) ; r3 : rep2 (forfait 8 × 1)
+    // r1 : rep1 (30% × prix du dossier 300 = 90 ; le prix indicatif 200 n'est plus utilisé) ; r3 : rep2 (forfait 8 × 1)
     await api('POST', '/stock/consommer', o({ body: { reparationId: S.r3._id, stockId: aff, quantite: 1 } }));
     await setCloture(S.r1._id); await setCloture(S.r3._id);
     r = await api('POST', '/remuneration/commissions/calculate', o({ body: range }));
@@ -167,7 +167,7 @@ async function main() {
     r = await api('GET', '/remuneration/commissions?' + new URLSearchParams(range), o());
     const comR1 = r.body.data.find((c) => String(c.reparation?._id) === String(S.r1._id));
     const comR3 = r.body.data.find((c) => String(c.reparation?._id) === String(S.r3._id));
-    check('Afficheur à 30 % : rep1 = 120', comR1?.montant === 120 && comR1.regleSnapshot.taux === 30, comR1);
+    check('Afficheur à 30 % du prix du DOSSIER (300) : rep1 = 90', comR1?.montant === 90 && comR1.regleSnapshot.taux === 30, comR1);
     check('Réparateur+article prioritaire : rep2 = 8 (forfait/unité)', comR3?.montant === 8 && comR3.regleSnapshot.niveau === 'reparateur+article', comR3);
     r = await api('POST', '/remuneration/commissions/calculate', o({ body: range }));
     check('Recalcul idempotent (0 créée)', r.body.data.crees === 0, r.body.data);
@@ -181,7 +181,7 @@ async function main() {
     await api('POST', '/remuneration/commissions/calculate', o({ body: range }));
     r = await api('GET', '/remuneration/commissions?' + new URLSearchParams(range), o());
     const after = r.body.data.find((c) => c._id === comR1._id);
-    check('Historique validé inchangé après modification du taux', after?.montant === 120 && after.statut === 'validee', after);
+    check('Historique validé inchangé après modification du taux', after?.montant === 90 && after.statut === 'validee', after);
 
     // ---------- Intervention partagée + salaire fixe ----------
     r = await api('POST', '/remuneration/contrats', o({ body: { reparateur: S.rep2._id, mode: 'salaire', salaire: 1450, validFrom: from } }));
@@ -194,7 +194,7 @@ async function main() {
     r = await api('GET', '/remuneration/commissions?' + new URLSearchParams(range), o());
     const shared = r.body.data.filter((c) => String(c.reparation?._id) === String(S.r2._id) && c.statut !== 'annulee');
     const sRep1 = shared.find((c) => String(c.reparateur._id) === String(S.rep1._id));
-    check('Intervention partagée : rep1 = 40% × 200 × 60% = 48 (nouvelle version)', sRep1?.montant === 48, shared);
+    check('Intervention partagée : rep1 = 40% × dossier 300 × 60% = 72 (nouvelle version)', sRep1?.montant === 72, shared);
     check('Salaire fixe : aucune commission automatique pour rep2', !shared.some((c) => String(c.reparateur._id) === String(S.rep2._id)), shared);
 
     // ---------- Annulation consommation après validation → contre-écriture ----------
@@ -204,7 +204,7 @@ async function main() {
     await wait(800);
     r = await api('GET', '/remuneration/commissions?' + new URLSearchParams(range), o());
     const rev = r.body.data.find((c) => c.annule === comR1._id);
-    check('Annulation : contre-écriture −120, original conservé', rev?.montant === -120 && r.body.data.some((c) => c._id === comR1._id && c.statut === 'validee'), rev);
+    check('Annulation : contre-écriture −90, original conservé', rev?.montant === -90 && r.body.data.some((c) => c._id === comR1._id && c.statut === 'validee'), rev);
 
     // ---------- Consommation uniquement par dossier (déclarations journalières supprimées) ----------
     r = await api('GET', '/declarations', o());
@@ -573,6 +573,72 @@ async function main() {
         comDirecte = await runAsSystem(async () => req('src/models/Commission').findOne({ reparation: repDirecte, sourceType: 'INTERVENTION' }).lean().exec());
       }
       check('Créée clôturée : 20 % × 200 sans pièce = 40, sans « Calculer » (avant : aucune ligne)', comDirecte?.montant === 40, comDirecte);
+
+      // ---- Règle stricte de clôture : « Sortie réparé » + reste 0 uniquement ----
+      const stRepare = (await api('GET', '/statuses', o())).body.data.find((s) => s.label === 'REPARE');
+      r = await api('POST', '/reparations', o({ body: {
+        client: S.r1.client, categorie: S.cat._id, objet: S.obj._id, marque: S.mar._id,
+        panneType: ['Ecran'], status: stRepare?._id, reparateur: repMO, prix: 100, acompte: 100,
+      } }));
+      check('« REPARE » seul + reste 0 → PAS clôturée', r.status === 201 && !r.body.data?.dateCloture, r.body.data?.dateCloture);
+      const repStrict = r.body.data?._id;
+      r = await api('PATCH', `/reparations/${repStrict}/status`, o({ body: { status: stSortie._id } }));
+      check('Passage en « SORTIE REPARE » + reste 0 → clôturée', r.status === 200 && !!r.body.data?.dateCloture, r.body.data?.dateCloture);
+      r = await api('PATCH', `/reparations/${repStrict}/status`, o({ body: { status: stRepare._id } }));
+      check('Retour en « REPARE » → déclôturée', r.status === 200 && !r.body.data?.dateCloture, r.body.data?.dateCloture);
+      r = await api('POST', '/reparations', o({ body: {
+        client: S.r1.client, categorie: S.cat._id, objet: S.obj._id, marque: S.mar._id,
+        panneType: ['Ecran'], status: stSortie?._id, reparateur: repMO, prix: 100, acompte: 40,
+      } }));
+      check('« SORTIE REPARE » avec reste 60 → PAS clôturée', r.status === 201 && !r.body.data?.dateCloture, r.body.data?.dateCloture);
+      const repReste = r.body.data?._id;
+      r = await api('PUT', `/reparations/${repReste}`, o({ body: { dateCloture: new Date().toISOString() } }));
+      check('Admin : date de clôture forcée refusée si reste > 0 (400)', r.status === 400, r.body);
+      r = await api('PUT', `/reparations/${repReste}`, o({ body: { acompte: 100 } }));
+      check('Reste soldé (acompte 100) → clôturée', r.status === 200 && !!r.body.data?.dateCloture, r.body.data?.dateCloture);
+
+      // ---- Lot 3 : % sur le BÉNÉFICE NET (exemple utilisateur, TTC) ----
+      // Dossier Informatique 370 TTC : disque (achat 100), afficheur (100), 3e pièce (30) → bénéfice 140 → 30 % = 42
+      const { famBN, catBN } = await runAsSystem(async () => {
+        const f0 = await req('src/models/Famille').create({ organisation: S.r1.organisation, nom: 'Informatique BN' });
+        const c0 = await req('src/models/Categorie').create({ organisation: S.r1.organisation, nom: 'PC BN', famille: f0._id });
+        return { famBN: f0, catBN: c0 };
+      });
+      const uBN = await api('POST', '/users', o({ body: { username: 'rep_bn_t', password: 'secret123', firstName: 'BN', lastName: 'T', role: 'REPARATEUR', boutiques: [A] } }));
+      const repBN = uBN.body.data?._id;
+      // Article : TVA 0 (coût TTC = HT) et prix de réparation indicatif 999 (ne doit JAMAIS servir)
+      const stBN = (await api('POST', '/stock', o({ body: { categorie: catBN._id, typeArticle: S.ta._id, quantite: 0, prixIndicatif: 999, code: 'BN-PIECE', tauxTVA: 0 } }))).body.data;
+      const pieceBN = (cout) => ({ stock: stBN._id, quantite: 1, coutUnitaire: cout, coutTotal: cout, statut: 'consomme', consommePar: S.owner._id, prixVenteUnitaire: 999 });
+      const repBNDoc = await runAsSystem(() => Reparation.create({
+        organisation: S.r1.organisation, boutique: S.A._id, client: S.r1.client, categorie: catBN._id, objet: S.obj._id, marque: S.mar._id,
+        panneType: ['Disque'], status: S.r1.status, createdBy: S.owner._id, reparateur: repBN, prix: 370, acompte: 370,
+        piecesStock: [pieceBN(100), pieceBN(100), pieceBN(30)],
+      }));
+      await setCloture(repBNDoc._id);
+      // Prix saisis TTC (comme en boutique) le temps de l'exemple, puis réglage restauré
+      const prixTTCAvant = (await api('GET', '/atelier/parametres', o())).body.data?.prixTTC;
+      await api('PUT', '/atelier/parametres', o({ body: { prixTTC: true } }));
+      r = await api('POST', '/remuneration/regles', o({ body: { nom: 'Info 30 % bénéfice', reparateur: repBN, famille: famBN._id, typeCalcul: 'pourcentage', base: 'benefice_net', taux: 30, validFrom: from } }));
+      check('Règle « 30 % du bénéfice net » sur la famille Informatique créée', r.status === 201, r.body);
+      r = await api('POST', '/remuneration/regles', o({ body: { nom: 'x', famille: famBN._id, typeCalcul: 'fixe_unite', base: 'prix_vente', montantFixe: 1, validFrom: from } }));
+      check('Cible famille hors bénéfice net refusée (400)', r.status === 400, r.body);
+      const comBN = async () => {
+        await api('POST', '/remuneration/commissions/calculate', o({ body: range }));
+        const l = (await api('GET', '/remuneration/commissions?' + new URLSearchParams({ ...range, reparateur: repBN }), o())).body.data || [];
+        return l.filter((c) => c.sourceType === 'BENEFICE_NET' && c.statut !== 'annulee');
+      };
+      let bn = await comBN();
+      check('Exemple : (370 − 230) = 140 de bénéfice → 30 % = 42 DT', bn.length === 1 && bn[0].montant === 42 && bn[0].details?.marge === 140 && bn[0].details?.depenses === 0, bn);
+      await api('POST', '/depenses', o({ body: { type: 'DIVERSE', categorieDiverse: 'Autre', motifDiverse: 'Outillage info', montant: 40, famille: famBN._id, dateDepense: new Date().toISOString() } }));
+      bn = await comBN();
+      check('Dépense Informatique 40 → bénéfice 100 → 30 DT (recalcul, pas de doublon)', bn.length === 1 && bn[0].montant === 30 && bn[0].details?.depenses === 40 && bn[0].details?.benefice === 100, bn);
+      await api('POST', '/depenses', o({ body: { type: 'DIVERSE', categorieDiverse: 'Autre', montant: 500, dateDepense: new Date().toISOString() } }));
+      bn = await comBN();
+      check('Dépense générale (sans famille) : non déduite', bn[0]?.montant === 30, bn);
+      await api('POST', '/depenses', o({ body: { type: 'DIVERSE', categorieDiverse: 'Autre', montant: 200, famille: famBN._id, dateDepense: new Date().toISOString() } }));
+      bn = await comBN();
+      check('Bénéfice négatif (140 − 240) → commission 0', bn.length === 1 && bn[0].montant === 0 && bn[0].details?.benefice === -100, bn);
+      await api('PUT', '/atelier/parametres', o({ body: { prixTTC: prixTTCAvant !== false } }));
     }
 
     // ---------- Rapports ----------

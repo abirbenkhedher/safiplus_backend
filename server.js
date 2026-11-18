@@ -24,6 +24,7 @@ const pannesRoutes =  require('./src/routes/pannesRoutes');
 const statistiquesRoutes = require('./src/routes/statistiquesRoutes');
 const zonesRoutes = require('./src/routes/zonesRoutes');
 const depensesRoutes = require('./src/routes/depensesRoutes');
+const commandeFournisseurRoutes = require('./src/routes/commandeFournisseurRoutes');
 const stockRoutes = require('./src/routes/stockRoutes');
 const typeArticleRoutes = require('./src/routes/typeArticlesRoutes');
 const organisationRoutes = require('./src/routes/organisationRoutes');
@@ -79,6 +80,7 @@ app.use('/api/pannes', pannesRoutes);
 app.use("/api/statistiques", statistiquesRoutes);
 app.use('/api/zones', zonesRoutes);
 app.use('/api/depenses', depensesRoutes);
+app.use('/api/commandes-fournisseurs', commandeFournisseurRoutes); // ✅ bons de commande fournisseur
 app.use('/api/stock', stockRoutes);
 app.use('/api/typearticles',typeArticleRoutes);
 app.use('/api/organisations', organisationRoutes);

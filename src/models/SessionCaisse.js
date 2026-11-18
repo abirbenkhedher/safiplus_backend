@@ -32,6 +32,9 @@ const sessionCaisseSchema = new mongoose.Schema({
     entrees: Number,
     sorties: Number,
     acomptesReparations: Number,
+    // ✅ Origine des espèces : réparations (factures de réparation + acomptes de dossier) / ventes
+    dontReparations: Number,
+    dontVentes: Number,
     theorique: Number,
     autresModes: { type: mongoose.Schema.Types.Mixed, default: {} },
   },

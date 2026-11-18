@@ -1009,8 +1009,11 @@ exports.update = async (req, res) => {
     }
 
     // ✅ Clôture : date saisie par l'admin prioritaire, sinon clôture automatique
-    //    dès que le statut est "réparé / sortie réparé" et que le reste à payer est 0.
+    //    dès que le statut est "sortie réparé" et que le reste à payer est 0.
+    //    Règle stricte : si la condition n'est plus remplie → déclôture.
     const roleUp = String(req.user?.role || '').toUpperCase();
+    const finalStatusDoc = reparation.status ? await Status.findById(reparation.status) : null;
+    const conditionCloture = isReparationCloturee(reparation, finalStatusDoc?.label);
     if (dateClotureOverride !== undefined && ['ADMIN', 'SUPER_ADMIN'].includes(roleUp)) {
       if (dateClotureOverride === null || dateClotureOverride === '') {
         reparation.dateCloture = null;
@@ -1019,18 +1022,28 @@ exports.update = async (req, res) => {
         if (isNaN(d.getTime())) {
           return res.status(400).json({ success: false, message: 'Date de clôture invalide' });
         }
+        if (!conditionCloture) {
+          return res.status(400).json({
+            success: false,
+            message: 'Clôture impossible : la réparation doit être en statut « Sortie réparé » avec un reste à payer de 0.',
+          });
+        }
         reparation.dateCloture = d;
       }
-    } else if (!reparation.dateCloture) {
-      const finalStatusDoc = reparation.status ? await Status.findById(reparation.status) : null;
-      if (isReparationCloturee(reparation, finalStatusDoc?.label)) {
-        reparation.dateCloture = new Date();
-        reparation.modifications = [...(reparation.modifications || []), {
-          field: 'dateCloture', oldValue: null, newValue: reparation.dateCloture,
-          modifiedBy: req.user.id, modifiedAt: new Date(), comment: 'Clôture automatique (réparé + reste 0)',
-        }];
-        logger.info(`🔒 Réparation ${reparation.numero} clôturée automatiquement`);
-      }
+    } else if (!reparation.dateCloture && conditionCloture) {
+      reparation.dateCloture = new Date();
+      reparation.modifications = [...(reparation.modifications || []), {
+        field: 'dateCloture', oldValue: null, newValue: reparation.dateCloture,
+        modifiedBy: req.user.id, modifiedAt: new Date(), comment: 'Clôture automatique (sortie réparé + reste 0)',
+      }];
+      logger.info(`🔒 Réparation ${reparation.numero} clôturée automatiquement`);
+    } else if (reparation.dateCloture && !conditionCloture) {
+      reparation.modifications = [...(reparation.modifications || []), {
+        field: 'dateCloture', oldValue: reparation.dateCloture, newValue: null,
+        modifiedBy: req.user.id, modifiedAt: new Date(), comment: 'Déclôture automatique (plus « sortie réparé » ou reste > 0)',
+      }];
+      reparation.dateCloture = null;
+      logger.info(`🔓 Réparation ${reparation.numero} déclôturée automatiquement`);
     }
 
     const finalPrix = reparation.prix || 0;
@@ -1362,6 +1375,14 @@ exports.changeStatus = async (req, res) => {
     if (cloture && !reparation.dateCloture) {
       reparation.dateCloture = new Date();
       logger.info(`🔒 Réparation ${reparation.numero} clôturée le ${reparation.dateCloture.toISOString()}`);
+    } else if (!cloture && reparation.dateCloture) {
+      // Plus en « sortie réparé » (ou reste > 0) → n'est plus clôturée
+      reparation.modifications = [...(reparation.modifications || []), {
+        field: 'dateCloture', oldValue: reparation.dateCloture, newValue: null,
+        modifiedBy: req.user.id, modifiedAt: new Date(), comment: `Déclôture automatique (statut ${newStatusLabel})`,
+      }];
+      reparation.dateCloture = null;
+      logger.info(`🔓 Réparation ${reparation.numero} déclôturée (statut ${newStatusLabel})`);
     }
 
     await reparation.save();

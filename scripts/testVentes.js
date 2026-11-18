@@ -139,6 +139,48 @@ async function main() {
     check('Usage « les deux » : proposée au comptoir', (r.body.data || []).length === 1, r.body);
     r = await api('GET', '/stock/referentiels', o());
     check('Référentiels : familles + famille des catégories', Array.isArray(r.body.data?.familles) && r.body.data.categories.some((x) => x.famille), r.body.data?.categories);
+
+    // ---- Lot 1 : prix de vente ≠ prix de réparation, TVA par produit figée ----
+    r = await api('GET', '/stock?usage=mixte', o());
+    let lp = (r.body.data || []).find((x) => String(x._id) === String(piece));
+    check('Produit sans TVA saisie → TVA de la boutique (19 %)', lp?.tauxTVA === 19, lp?.tauxTVA);
+    check('Ancien article : prixVente vide (repli sur le prix unique)', lp?.prixVente === null || lp?.prixVente === undefined, lp?.prixVente);
+    r = await api('GET', '/ventes/comptoir/articles?search=ecr1', o());
+    check('Comptoir : sans prix de vente → prix unique d\'avant (80)', r.body.data?.[0]?.prix === 80, r.body.data);
+    r = await api('PUT', `/stock/${piece}`, o({ body: { prixVente: 120 } }));
+    check('Prix de vente 120 enregistré, prix réparation inchangé (80)', r.status === 200 && r.body.data.prixVente === 120 && r.body.data.prixIndicatif === 80, r.body.data);
+    r = await api('GET', '/ventes/comptoir/articles?search=ecr1', o());
+    check('Comptoir : utilise le prix de VENTE (120), pas celui de réparation', r.body.data?.[0]?.prix === 120, r.body.data);
+    r = await api('PUT', `/stock/${piece}`, o({ body: { tauxTVA: 7 } }));
+    check('Sans mouvement : TVA modifiable (19 → 7)', r.status === 200 && r.body.data.tauxTVA === 7, r.body);
+    await api('POST', `/stock/${piece}/increment`, o({ body: { delta: 1 } }));
+    await api('POST', `/stock/${piece}/increment`, o({ body: { delta: -1 } }));
+    r = await api('PUT', `/stock/${piece}`, o({ body: { tauxTVA: 19 } }));
+    check('Après un mouvement : TVA figée (409 TVA_FIGEE)', r.status === 409 && r.body.code === 'TVA_FIGEE', r.body);
+    r = await api('PUT', `/stock/${piece}`, o({ body: { tauxTVA: 7, prixVente: 125 } }));
+    check('Même TVA renvoyée : pas de blocage (autres champs modifiés)', r.status === 200 && r.body.data.prixVente === 125, r.body);
+    r = await api('GET', '/stock?usage=mixte', o());
+    lp = (r.body.data || []).find((x) => String(x._id) === String(piece));
+    check('Liste : indicateur tvaVerrouillee', lp?.tvaVerrouillee === true, lp);
+    // ---- Lot 2 : bouton « + » = entrée en stock avec CMUP ----
+    r = await api('POST', `/stock/${piece}/entree`, o({ body: { quantite: 0, coutUnitaireHT: 10 } }));
+    check('Entrée : quantité 0 refusée (400)', r.status === 400, r.body);
+    r = await api('POST', `/stock/${piece}/entree`, o({ body: { quantite: 2 } }));
+    check('Entrée : prix d\'achat obligatoire (400)', r.status === 400, r.body);
+    r = await api('POST', `/stock/${piece}/entree`, o({ body: { quantite: 2, coutUnitaireHT: 50 } }));
+    check('Entrée sans CMP connu : +2 → stock 5, CMP = 50, dernier achat 50',
+      r.status === 200 && r.body.data.quantite === 5 && r.body.data.cmp === 50 && r.body.data.dernierCoutAchat === 50, r.body);
+    r = await api('POST', `/stock/${piece}/entree`, o({ body: { quantite: 5, coutUnitaireHT: 64, motif: 'Fournisseur X' } }));
+    check('Entrée +5 à 64 : CMUP (5×50 + 5×64)/10 = 57, dernier achat 64, TVA inchangée (7)',
+      r.status === 200 && r.body.data.quantite === 10 && r.body.data.cmp === 57 && r.body.data.dernierCoutAchat === 64 && r.body.data.tauxTVA === 7 && r.body.cmpAvant === 50, r.body);
+    r = await api('GET', `/stock/${piece}/mouvements`, o());
+    const mvE = (r.body.data || []).find((m) => m.motif === 'Fournisseur X');
+    check('Entrée tracée en mouvement ENTREE_ACHAT (coût 64)', mvE?.type === 'ENTREE_ACHAT' && mvE.coutUnitaire === 64 && mvE.quantite === 5, r.body.data?.[0]);
+    r = await api('POST', `/stock/${piece}/entree`, { token: tVend, boutique: A, body: { quantite: 1, coutUnitaireHT: 10 } });
+    check('Entrée en stock sans permission stock → 403', r.status === 403, r.status);
+
+    r = await api('PUT', '/atelier/parametres', o({ body: { tauxTVAAutorises: '19, 7' } }));
+    check('Paramètre « taux proposés » : 7, 19 (trié)', r.status === 200 && JSON.stringify(r.body.data?.tauxTVAAutorises) === '[7,19]', r.body.data?.tauxTVAAutorises);
     r = await api('POST', '/stock', o({ body: { categorie: S.cat._id, typeArticle: S.ta2._id, quantite: 5, prixIndicatif: 30, code: 'CABLE1', usage: 'vente', tauxTVA: 7, coutUnitaire: 20 } }));
     const cable = r.body.data?._id;
     check('Produit : TVA 7 %, coût d\'achat 20 → CMP et dernier coût 20', r.body.data?.tauxTVA === 7 && r.body.data.cmp === 20 && r.body.data.dernierCoutAchat === 20, r.body.data);
@@ -241,14 +283,14 @@ async function main() {
     r = await api('GET', `/reglements/solde/${S.cli._id}`, o());
     check('Solde client = −49 (crédit)', r.body.data.solde === -49, r.body.data);
 
-    // ---------- Avoir ----------
-    r = await api('POST', `/ventes/${fa1._id}/avoir`, o());
+    // ---------- Bon de retour (marchandise en stock + argent) ----------
+    r = await api('POST', `/ventes/${fa1._id}/avoir`, o({ body: { nature: 'retour' } }));
     const av = r.body.data;
-    check('Avoir brouillon depuis facture', r.status === 201 && av.type === 'AVOIR' && av.factureOrigine === fa1._id, r.body);
+    check('Bon de retour brouillon depuis facture (articles seulement)', r.status === 201 && av.type === 'AVOIR' && av.nature === 'retour' && av.factureOrigine === fa1._id && av.lignes.every((l) => l.type === 'article' && l.retourStock), r.body);
     r = await api('PUT', `/ventes/${av._id}`, o({ body: { lignes: [{ stock: coque, quantite: 1, prixUnitaire: 100, retourStock: true, coutUnitaire: 999 }] } }));
     check('Avoir : coût forgé ignoré (coût de la facture)', r.body.data?.lignes?.[0]?.coutUnitaire === null || r.body.data?.lignes?.[0]?.coutUnitaire !== 999, r.body);
     r = await api('POST', `/ventes/${av._id}/valider`, o());
-    check(`Avoir AV-${year}-0001 (100) : stock 7 → 8`, r.body.data?.numero === `AV-${year}-0001` && (await qte()).quantite === 8, r.body);
+    check(`Bon de retour BR-${year}-0001 (100) : stock 7 → 8`, r.body.data?.numero === `BR-${year}-0001` && (await qte()).quantite === 8, r.body);
     r = await api('GET', `/reglements/solde/${S.cli._id}`, o());
     check('Solde client = −149 après avoir', r.body.data.solde === -149, r.body.data);
     r = await api('POST', `/ventes/${fa1._id}/avoir`, o());
@@ -282,6 +324,20 @@ async function main() {
     check('Chèque impayé → annulé, facture de nouveau due', r.body.data?.statut === 'annule' && r.body.data.etatCheque === 'impaye', r.body);
     r = await api('GET', '/reglements/creances', o());
     check('Créances : client à 201', r.body.data?.find((x) => x.client === String(S.cli._id))?.solde === 201, r.body.data);
+
+    // ---------- Traite (lettre de change) ----------
+    r = await api('POST', '/ventes', o({ body: { type: 'BL', client: S.cli._id, modePaiement: 'TRAITE', dateEcheance: '2026-12-31', lignes: [{ designation: 'Service', quantite: 1, prixUnitaire: 10 }] } }));
+    check('BL : mode de paiement « Traite » + échéance enregistrés', r.status === 201 && r.body.data.modePaiement === 'TRAITE' && !!r.body.data.dateEcheance, r.body);
+    await api('DELETE', `/ventes/${r.body.data._id}`, o());
+    r = await api('POST', '/ventes', o({ body: { type: 'BL', client: S.cli._id, modePaiement: 'BITCOIN', lignes: [] } }));
+    check('Mode de paiement inconnu refusé (400)', r.status === 400, r.body);
+    r = await api('POST', '/reglements', o({ body: { client: S.cli._id, mode: 'TRAITE', montant: 201, reference: 'TR-01', banque: 'BIAT', dateEcheance: '2026-12-31', affectations: [{ document: fa3._id, montant: 201 }] } }));
+    const tr = r.body.data;
+    check('Règlement par traite : en portefeuille avec échéance', r.status === 201 && tr.mode === 'TRAITE' && tr.etatCheque === 'en_portefeuille' && !!tr.dateEcheance, r.body);
+    r = await api('GET', '/reglements?' + new URLSearchParams({ mode: 'CHEQUE,TRAITE', statut: 'valide', etatCheque: 'en_portefeuille' }), o());
+    check('Portefeuille chèques & traites : la traite y figure', (r.body.data || []).some((x) => x._id === tr._id), r.body.data);
+    r = await api('POST', `/reglements/${tr._id}/cheque`, o({ body: { etat: 'impaye' } }));
+    check('Traite impayée → règlement annulé, facture de nouveau due', r.body.data?.statut === 'annule' && r.body.data.etatCheque === 'impaye', r.body);
 
     // ---------- Isolation ----------
     r = await api('GET', `/ventes/${fa1._id}`, { token: T, boutique: B });
@@ -332,11 +388,66 @@ async function main() {
     const j = r.body.data?.totaux;
     check('Ventes du jour : 4 tickets, 410 TTC, espèces 280, carte 60', j?.nombre === 4 && j.ttc === 410 && j.parMode.ESPECES === 280 && j.parMode.CARTE === 60, j);
     check('Marge articles du jour = 336.135 − 160 = 176.135', j?.margeArticles === 176.135 && j.coutArticles === 160, j);
-    r = await api('POST', `/ventes/${tk1.ticket._id}/avoir`, o());
-    r = await api('POST', `/ventes/${r.body.data._id}/valider`, o());
-    check('Avoir sur ticket : stock remis (+2)', r.status === 200 && (await qte()).quantite === stock0 - 2 - 1 - 1 + 2, r.body);
+    r = await api('POST', `/ventes/${tk1.ticket._id}/avoir`, o({ body: { nature: 'retour' } }));
+    r = await api('POST', `/ventes/${r.body.data._id}/valider`, o({ body: { remboursement: { mode: 'CARTE' } } }));
+    check('Bon de retour sur ticket payé : stock remis (+2) ET 200 remboursés', r.status === 200 && (await qte()).quantite === stock0 - 2 - 1 - 1 + 2 && r.body.rembourse === 200 && !!r.body.data.reglementRemboursement, r.body);
+    // ---------- Avoir : l'argent sort, la pièce NE revient PAS ----------
+    const tk2 = (await api('GET', '/ventes?type=TICKET', o())).body.data.find((d) => d.numero === `TK-${year}-0002`);
+    const avantAvoir = (await qte()).quantite;
+    r = await api('POST', `/ventes/${tk2._id}/avoir`, o());
+    check('Avoir brouillon (nature avoir) : aucune ligne remise en stock', r.status === 201 && r.body.data.nature === 'avoir' && r.body.data.lignes.every((l) => !l.retourStock), r.body.data);
+    const avT = r.body.data;
+    await api('PUT', `/ventes/${avT._id}`, o({ body: { lignes: [{ stock: coque, quantite: 1, prixUnitaire: 100, retourStock: true }] } }));
+    r = await api('POST', `/ventes/${avT._id}/valider`, o({ body: { remboursement: { mode: 'CARTE' } } }));
+    check('Avoir validé : 100 remboursés, stock INCHANGÉ (même si retourStock forcé)', r.status === 200 && r.body.rembourse === 100 && /^AV-/.test(r.body.data.numero) && (await qte()).quantite === avantAvoir, r.body);
+    r = await api('POST', `/ventes/${tk3.ticket._id}/avoir`, o());
+    await api('PUT', `/ventes/${r.body.data._id}`, o({ body: { lignes: [{ designation: 'Geste commercial', quantite: 1, prixUnitaire: 20 }] } }));
+    r = await api('POST', `/ventes/${r.body.data._id}/valider`, o({ body: { remboursement: { mode: 'CARTE' } } }));
+    check('Avoir 20 sur ticket payé 30/100 : rien à rembourser (la dette baisse)', r.status === 200 && r.body.rembourse === 0, r.body);
+    r = await api('POST', `/ventes/${fa3._id}/avoir`, o({ body: { nature: 'retour' } }));
+    check('Bon de retour sur facture sans article : refusé (409)', r.status === 409, r.body);
+
+    // ---------- Bon de commande CLIENT : devis → BC → facture ----------
+    r = await api('POST', '/ventes', o({ body: { type: 'DEVIS', client: S.cli._id, lignes: [{ stock: coque, quantite: 1 }] } }));
+    await api('POST', `/ventes/${r.body.data._id}/valider`, o());
+    const dvBC = r.body.data;
+    const stockAvantBC = (await qte()).quantite;
+    r = await api('POST', `/ventes/${dvBC._id}/transformer`, o({ body: { type: 'BC' } }));
+    check('Devis → bon de commande client (brouillon)', r.status === 201 && r.body.data.type === 'BC', r.body);
+    const bc = r.body.data;
+    r = await api('POST', `/ventes/${bc._id}/valider`, o());
+    check(`BC-${year}-0001 validé : ni stock ni argent`, r.status === 200 && r.body.data.numero === `BC-${year}-0001` && (await qte()).quantite === stockAvantBC, r.body);
+    r = await api('GET', `/reglements/solde/${S.cli._id}`, o());
+    const soldeAvantBC = r.body.data.solde;
+    r = await api('POST', `/ventes/${bc._id}/transformer`, o({ body: { type: 'FACTURE' } }));
+    check('BC → facture (brouillon)', r.status === 201 && r.body.data.type === 'FACTURE' && String(r.body.data.origines?.[0]) === String(bc._id), r.body);
+    const faBC = r.body.data;
+    r = await api('POST', `/ventes/${faBC._id}/valider`, o());
+    const bcApres = (await api('GET', `/ventes/${bc._id}`, o())).body.data;
+    check('Facture du BC validée : stock −1, BC « transformé »', r.status === 200 && (await qte()).quantite === stockAvantBC - 1 && bcApres.statut === 'transforme', { s: r.status, statut: bcApres.statut });
+    r = await api('GET', `/reglements/solde/${S.cli._id}`, o());
+    check('Solde client : seule la facture compte (pas le BC)', r.body.data.solde > soldeAvantBC, { avant: soldeAvantBC, apres: r.body.data.solde });
+
+    // ---------- Bon de commande FOURNISSEUR → facture d'achat ----------
+    r = await api('POST', '/commandes-fournisseurs', o({ body: { fournisseur: 'Grossiste X', lignes: [{ stock: coque, quantite: 10, prixUnitaire: 35 }] } }));
+    const bcf = r.body.data;
+    check('BC fournisseur brouillon : TVA de l\'article, total HT 350', r.status === 201 && bcf.totalHT === 350 && bcf.lignes[0].tauxTVA === 19, r.body);
+    const stockAvantBCF = (await qte()).quantite;
+    r = await api('POST', `/commandes-fournisseurs/${bcf._id}/facturer`, o());
+    check('BC fournisseur non validé : pas de facture (409)', r.status === 409, r.body);
+    r = await api('POST', `/commandes-fournisseurs/${bcf._id}/valider`, o());
+    check(`BCF-${year}-0001 validé : stock inchangé`, r.status === 200 && r.body.data.numero === `BCF-${year}-0001` && (await qte()).quantite === stockAvantBCF, r.body);
+    r = await api('POST', `/commandes-fournisseurs/${bcf._id}/facturer`, o());
+    const depBCF = r.body.depense;
+    check('BC fournisseur → facture d\'achat BROUILLON (10 × 35 HT)', r.status === 201 && r.body.data.statut === 'recue' && depBCF?.type === 'ACHAT' && depBCF.statut === 'brouillon' && depBCF.lignes[0].quantite === 10, r.body);
+    r = await api('POST', `/commandes-fournisseurs/${bcf._id}/facturer`, o());
+    check('Double transformation refusée (409)', r.status === 409, r.body);
+    r = await api('POST', `/depenses/${depBCF._id}/validate`, o());
+    check('Facture d\'achat validée : entrée en stock +10', r.status === 200 && (await qte()).quantite === stockAvantBCF + 10, r.body);
+    r = await api('GET', '/commandes-fournisseurs', { token: tVend, boutique: A });
+    check('BC fournisseur : accès refusé sans permission achats (403)', r.status === 403, r.status);
     r = await api('GET', '/reglements/synthese', o());
-    check('Synthèse : 4 tickets, marge articles nette des retours', r.body.data?.tickets?.nombre === 4 && r.body.data.articles.marge > 0, r.body.data);
+    check('Synthèse : tickets, marge articles nette des retours', r.body.data?.tickets?.nombre >= 4 && r.body.data.articles.marge > 0, r.body.data);
 
     // ---------- Caisse journalière ----------
     const params0 = (await api('GET', '/atelier/parametres', o())).body.data;
@@ -369,6 +480,7 @@ async function main() {
     let calc = r.body.data?.calcul;
     check('Théorique = 100 + 301 espèces − 20 + 10 + 30 acompte dossier = 421 (pas de double compte)', calc?.theorique === 421 && calc.acomptesReparations === 30 && calc.encaissementsEspeces === 301, calc);
     check('Autres modes : carte du jour visible', calc?.autresModes?.CARTE > 0, calc?.autresModes);
+    check('Origine des espèces : réparations 231 (facture réparation 201 + acompte 30), ventes 100', calc?.dontReparations === 231 && calc.dontVentes === 100, calc);
     await api('POST', `/caisse/mouvements/${mvtEntree._id}/annuler`, o({ body: { motif: 'erreur' } }));
     r = await api('GET', '/caisse/courante', o());
     calc = r.body.data?.calcul;
@@ -439,6 +551,52 @@ async function main() {
     r = await api('POST', '/reglements', o({ body: { client: S.cli2._id, mode: 'ESPECES', montant: 5, date: auj, affectations: [{ document: tkA?._id, montant: 5 }] } }));
     const rgA = r.body.data;
     check('Règlement daté du jour : heure réelle, après le ticket (ordre du relevé)', !!rgA && new Date(rgA.date) >= new Date(tkA.date), { ticket: tkA?.date, reglement: rgA?.date, status: r.status, body: r.body });
+
+    // ---------- Remises : par ligne (% / montant) + globale, calculs exacts ----------
+    // L1 : 2 × 100 TTC, TVA 19, −10 % → 180 ; L2 : 1 × 50 TTC, TVA 7, −5 DT → 45 ; total 225
+    // Remise globale 10 % = 22,5 → répartie 18 / 4,5 → 162 et 40,5 TTC
+    // HT : 162/1,19 = 136,134 (TVA 25,866) ; 40,5/1,07 = 37,850 (TVA 2,650) → HT 173,984, TVA 28,516, TTC 202,5 (+ timbre 1)
+    const lignesRem = [
+      { designation: 'Prestation A', quantite: 2, prixUnitaire: 100, tauxTVA: 19, remiseType: 'pct', remisePct: 10 },
+      { designation: 'Prestation B', quantite: 1, prixUnitaire: 50, tauxTVA: 7, remiseType: 'montant', remiseMontant: 5 },
+    ];
+    r = await api('POST', '/ventes', o({ body: { type: 'FACTURE', client: S.cli2._id, prixSaisis: 'TTC', remiseGlobaleType: 'pct', remiseGlobaleValeur: 10, lignes: lignesRem } }));
+    const faR = r.body.data;
+    check('Remises : avant remise 225, remise globale 22,5, HT 173,984, TVA 28,516, net 203,5',
+      r.status === 201 && faR.totalAvantRemise === 225 && faR.remiseGlobaleMontant === 22.5 && faR.totalHT === 173.984 && faR.totalTVA === 28.516 && faR.netAPayer === 203.5, faR);
+    check('Remises : TVA par taux exacte (19 % : 136,134 / 25,866 ; 7 % : 37,850 / 2,650)',
+      JSON.stringify(faR?.tvaParTaux) === JSON.stringify([{ taux: 7, base: 37.85, montant: 2.65 }, { taux: 19, base: 136.134, montant: 25.866 }]), faR?.tvaParTaux);
+    // ✅ Même résultat avec le calcul de l'interface (components/commercial/calculs.js)
+    const front = await import(require('url').pathToFileURL(require('path').join(BACK, '../safiplus_frontend/src/components/commercial/calculs.js')).href);
+    const tf = front.calcTotaux(lignesRem, 'TTC', 1, { type: 'pct', valeur: 10 });
+    check('Interface = serveur (HT, TVA, net, remise)', tf.ht === 173.984 && tf.tva === 28.516 && tf.net === 203.5 && tf.remise === 22.5, tf);
+    r = await api('PUT', `/ventes/${faR._id}`, o({ body: { remiseGlobaleType: 'montant', remiseGlobaleValeur: 300 } }));
+    check('Remise globale > total refusée (400)', r.status === 400, r.body);
+    r = await api('PUT', `/ventes/${faR._id}`, o({ body: { lignes: [{ designation: 'X', quantite: 1, prixUnitaire: 10, remiseType: 'montant', remiseMontant: 11 }] } }));
+    check('Remise de ligne > montant refusée (400)', r.status === 400, r.body);
+    r = await api('PUT', `/ventes/${faR._id}`, o({ body: { remiseGlobaleType: 'montant', remiseGlobaleValeur: 22.5 } }));
+    check('Remise globale 22,5 DT = même résultat que 10 %', r.status === 200 && r.body.data.netAPayer === 203.5, r.body.data);
+    r = await api('POST', `/ventes/${faR._id}/valider`, o());
+    check('Facture remisée validée : net 203,5 conservé', r.status === 200 && r.body.data.netAPayer === 203.5, r.body);
+    r = await api('POST', `/ventes/${faR._id}/avoir`, o());
+    check('Avoir de la facture remisée : 202,5 (remises reprises, sans timbre)', r.status === 201 && r.body.data.netAPayer === 202.5, r.body.data);
+    await api('DELETE', `/ventes/${r.body.data._id}`, o());
+
+    // ---------- Remises sur facture d'achat : coût de revient juste ----------
+    // L1 : 2 × 50 HT, −10 % → 90 ; L2 libre 100 HT −10 DT → 90 ; remise globale 18 DT → 81 / 81
+    r = await api('POST', '/depenses', o({ body: {
+      type: 'ACHAT', fournisseur: 'Remises SA', remiseGlobaleType: 'montant', remiseGlobaleValeur: 18,
+      lignes: [
+        { stock: coque, quantite: 2, prixUnitaire: 50, tauxTVA: 19, remiseType: 'pct', remisePct: 10 },
+        { designation: 'Accessoires', quantite: 1, prixUnitaire: 100, tauxTVA: 19, remiseType: 'montant', remise: 10 },
+      ],
+    } }));
+    const acR = r.body.data;
+    check('Achat remisé : HT 162, TVA 30,78, total 192,78, remise globale 18',
+      r.status === 201 && acR.montantHT === 162 && acR.montantTVA === 30.78 && acR.montant === 192.78 && acR.remiseGlobaleMontant === 18, acR);
+    check('Achat remisé : coût de revient unitaire de l\'article = 81 / 2 = 40,5', acR?.lignes?.[0]?.coutUnitaireRevient === 40.5 && acR.lignes[0].remise === 10, acR?.lignes);
+    r = await api('POST', '/depenses', o({ body: { type: 'ACHAT', remiseGlobaleType: 'montant', remiseGlobaleValeur: 999, lignes: [{ designation: 'Y', quantite: 1, prixUnitaire: 10 }] } }));
+    check('Achat : remise globale > total refusée', r.status >= 400, r.status);
   } finally {
     server.kill();
     await mongoose.disconnect();

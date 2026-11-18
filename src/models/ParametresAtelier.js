@@ -17,6 +17,8 @@ const parametresSchema = new mongoose.Schema({
   // Bases de calcul (documentées, cf. §8.1 / §12)
   prixTTC: { type: Boolean, default: true },      // les prix saisis sont TTC
   tauxTVA: { type: Number, default: 19, min: 0, max: 100 },
+  // ✅ Taux proposés sur les produits (flèches 7 % ↔ 19 %), saisie libre possible
+  tauxTVAAutorises: { type: [Number], default: [7, 19] },
   remisesDeduites: { type: Boolean, default: true }, // les remises réduisent la base
 
   // Garantie / SAV : éviter les doubles commissions
